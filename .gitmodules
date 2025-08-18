@@ -1,0 +1,3 @@
+[submodule "workload/framework/sglang"]
+	path = workload/framework/sglang
+	url = https://github.com/sgl-project/sglang

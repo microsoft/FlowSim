@@ -1,0 +1,18 @@
+trigger:
+- main
+
+pr:
+  branches:
+    include:
+      - main
+
+pool:
+  vmImage: ubuntu-22.04
+
+steps:
+- script: python3 -m pip install black
+  displayName: 'Install Black'
+
+- script: bash -e ./scripts/lint.sh dry
+  displayName: 'Lint'
+

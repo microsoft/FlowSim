@@ -1,0 +1,25 @@
+From bd67e7454c15946c390b372d1670aac0ca6fa95b Mon Sep 17 00:00:00 2001
+From: Tao Zhang <zhangt@microsoft.com>
+Date: Mon, 25 Aug 2025 12:46:05 -0700
+Subject: [PATCH] Fix gpt2 model bug
+
+---
+ python/sglang/srt/models/gpt2.py | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/python/sglang/srt/models/gpt2.py b/python/sglang/srt/models/gpt2.py
+index 1ec33406f..fed466dee 100644
+--- a/python/sglang/srt/models/gpt2.py
++++ b/python/sglang/srt/models/gpt2.py
+@@ -76,7 +76,7 @@ class GPT2Attention(nn.Module):
+             self.num_heads,
+             self.head_dim,
+             scaling=self.scale,
+-            num_kv_heads=total_num_heads,
++            num_kv_heads=self.num_heads,
+             layer_id=layer_id,
+             quant_config=quant_config,
+         )
+-- 
+2.43.0
+

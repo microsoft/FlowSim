@@ -1,0 +1,613 @@
+From 5331c45b64cb159c8730a63e8781521a50f8a299 Mon Sep 17 00:00:00 2001
+From: Tao Zhang <zhangt@microsoft.com>
+Date: Mon, 25 Aug 2025 20:38:13 -0700
+Subject: [PATCH 2/2] Add user-annotation for shape record
+
+---
+ .../layers/attention/flashinfer_backend.py    | 56 ++++++++-----
+ .../attention/flashinfer_mla_backend.py       | 54 ++++++++-----
+ python/sglang/srt/layers/elementwise.py       | 45 +++++++----
+ python/sglang/srt/layers/moe/ep_moe/layer.py  | 79 +++++++++++++------
+ python/sglang/srt/layers/moe/router.py        | 34 ++++----
+ .../srt/layers/moe/token_dispatcher/deepep.py | 71 ++++++++++-------
+ .../srt/layers/quantization/fp8_utils.py      | 23 ++++--
+ .../srt/layers/vocab_parallel_embedding.py    | 26 ++++--
+ python/sglang/srt/managers/schedule_batch.py  | 28 ++++---
+ .../srt/model_executor/forward_batch_info.py  | 17 ++--
+ 10 files changed, 289 insertions(+), 144 deletions(-)
+
+diff --git a/python/sglang/srt/layers/attention/flashinfer_backend.py b/python/sglang/srt/layers/attention/flashinfer_backend.py
+index c7da38ac5..b775455a5 100644
+--- a/python/sglang/srt/layers/attention/flashinfer_backend.py
++++ b/python/sglang/srt/layers/attention/flashinfer_backend.py
+@@ -735,15 +735,25 @@ class FlashInferIndicesUpdaterDecode:
+                     paged_kernel_lens_sum, dtype=torch.int32, device="cuda"
+                 )
+ 
+-            create_flashinfer_kv_indices_triton[(bs,)](
+-                self.req_to_token,
+-                req_pool_indices,
+-                paged_kernel_lens,
+-                kv_indptr,
+-                kv_start_idx,
+-                kv_indices,
+-                self.req_to_token.shape[1],
+-            )
++            with torch.profiler.record_function(
++                f"create_flashinfer_kv_indices_triton["
++                f"req_to_token={tuple(self.req_to_token.shape)},"
++                f"req_pool_indices={tuple(req_pool_indices.shape)},"
++                f"paged_kernel_lens={tuple(paged_kernel_lens.shape)},"
++                f"kv_indptr={tuple(kv_indptr.shape)},"
++                f"kv_start_idx={tuple(kv_start_idx.shape) if kv_start_idx is not None else 'None'},"
++                f"kv_indices={tuple(kv_indices.shape)},"
++                f"dtype={self.req_to_token.dtype},{req_pool_indices.dtype},{paged_kernel_lens.dtype},{kv_indptr.dtype},{kv_start_idx.dtype if kv_start_idx is not None else 'None'},{kv_indices.dtype}]"
++            ):
++                create_flashinfer_kv_indices_triton[(bs,)](
++                    self.req_to_token,
++                    req_pool_indices,
++                    paged_kernel_lens,
++                    kv_indptr,
++                    kv_start_idx,
++                    kv_indices,
++                    self.req_to_token.shape[1],
++                )
+         else:
+             kv_indptr, kv_indices = spec_info.kv_indptr, spec_info.kv_indices
+             bs = kv_indptr.shape[0] - 1
+@@ -959,15 +969,25 @@ class FlashInferIndicesUpdaterPrefill:
+                 dtype=torch.int32,
+                 device=req_pool_indices.device,
+             )
+-            create_flashinfer_kv_indices_triton[(bs,)](
+-                self.req_to_token,
+-                req_pool_indices,
+-                paged_kernel_lens,
+-                kv_indptr,
+-                kv_start_idx,
+-                kv_indices,
+-                self.req_to_token.shape[1],
+-            )
++            with torch.profiler.record_function(
++                f"create_flashinfer_kv_indices_triton["
++                f"req_to_token={tuple(self.req_to_token.shape)},"
++                f"req_pool_indices={tuple(req_pool_indices.shape)},"
++                f"paged_kernel_lens={tuple(paged_kernel_lens.shape)},"
++                f"kv_indptr={tuple(kv_indptr.shape)},"
++                f"kv_start_idx={tuple(kv_start_idx.shape) if kv_start_idx is not None else 'None'},"
++                f"kv_indices={tuple(kv_indices.shape)},"
++                f"dtype={self.req_to_token.dtype},{req_pool_indices.dtype},{paged_kernel_lens.dtype},{kv_indptr.dtype},{kv_start_idx.dtype if kv_start_idx is not None else 'None'},{kv_indices.dtype}]"
++            ):
++                create_flashinfer_kv_indices_triton[(bs,)](
++                    self.req_to_token,
++                    req_pool_indices,
++                    paged_kernel_lens,
++                    kv_indptr,
++                    kv_start_idx,
++                    kv_indices,
++                    self.req_to_token.shape[1],
++                )
+             qo_indptr[1 : bs + 1] = torch.cumsum(seq_lens - prefix_lens, dim=0)
+             qo_indptr = qo_indptr[: bs + 1]
+             custom_mask = None
+diff --git a/python/sglang/srt/layers/attention/flashinfer_mla_backend.py b/python/sglang/srt/layers/attention/flashinfer_mla_backend.py
+index 1b8dc64e5..041be5a64 100644
+--- a/python/sglang/srt/layers/attention/flashinfer_mla_backend.py
++++ b/python/sglang/srt/layers/attention/flashinfer_mla_backend.py
+@@ -564,15 +564,24 @@ class FlashInferMLAIndicesUpdaterDecode:
+                 if not init_metadata_replay
+                 else fast_decode_kwargs["kv_indices"]
+             )
+-            create_flashinfer_kv_indices_triton[(bs,)](
+-                self.req_to_token,
+-                req_pool_indices,
+-                paged_kernel_lens,
+-                kv_indptr,
+-                None,
+-                kv_indices,
+-                self.req_to_token.shape[1],
+-            )
++            with torch.profiler.record_function(
++                f"create_flashinfer_kv_indices_triton["
++                f"req_to_token={tuple(self.req_to_token.shape)},"
++                f"req_pool_indices={tuple(req_pool_indices.shape)},"
++                f"paged_kernel_lens={tuple(paged_kernel_lens.shape)},"
++                f"kv_indptr={tuple(kv_indptr.shape)},"
++                f"kv_indices={tuple(kv_indices.shape)},"
++                f"dtype={self.req_to_token.dtype},{req_pool_indices.dtype},{paged_kernel_lens.dtype},{kv_indptr.dtype},{kv_indices.dtype}]"
++            ):
++                create_flashinfer_kv_indices_triton[(bs,)](
++                    self.req_to_token,
++                    req_pool_indices,
++                    paged_kernel_lens,
++                    kv_indptr,
++                    None,
++                    kv_indices,
++                    self.req_to_token.shape[1],
++                )
+         else:
+             kv_indptr, kv_indices = spec_info.kv_indptr, spec_info.kv_indices
+ 
+@@ -686,15 +695,24 @@ class FlashInferMLAIndicesUpdaterPrefill:
+                 dtype=torch.int32,
+                 device=req_pool_indices.device,
+             )
+-            create_flashinfer_kv_indices_triton[(bs,)](
+-                self.req_to_token,
+-                req_pool_indices,
+-                paged_kernel_lens,
+-                kv_indptr,
+-                None,
+-                kv_indices,
+-                self.req_to_token.shape[1],
+-            )
++            with torch.profiler.record_function(
++                f"create_flashinfer_kv_indices_triton["
++                f"req_to_token={tuple(self.req_to_token.shape)},"
++                f"req_pool_indices={tuple(req_pool_indices.shape)},"
++                f"paged_kernel_lens={tuple(paged_kernel_lens.shape)},"
++                f"kv_indptr={tuple(kv_indptr.shape)},"
++                f"kv_indices={tuple(kv_indices.shape)},"
++                f"dtype={self.req_to_token.dtype},{req_pool_indices.dtype},{paged_kernel_lens.dtype},{kv_indptr.dtype},{kv_indices.dtype}]"
++            ):
++                create_flashinfer_kv_indices_triton[(bs,)](
++                    self.req_to_token,
++                    req_pool_indices,
++                    paged_kernel_lens,
++                    kv_indptr,
++                    None,
++                    kv_indices,
++                    self.req_to_token.shape[1],
++                )
+             qo_indptr[1 : bs + 1] = torch.cumsum(seq_lens - prefix_lens, dim=0)
+             qo_indptr = qo_indptr[: bs + 1]
+             custom_mask = None
+diff --git a/python/sglang/srt/layers/elementwise.py b/python/sglang/srt/layers/elementwise.py
+index 3134e2bc1..9953b88d1 100644
+--- a/python/sglang/srt/layers/elementwise.py
++++ b/python/sglang/srt/layers/elementwise.py
+@@ -203,17 +203,27 @@ def fused_dual_residual_rmsnorm(x, residual, weight1, weight2, eps, autotune=Fal
+             ),
+         }
+ 
+-        fused_dual_residual_rmsnorm_kernel[(bs,)](
+-            output,
+-            mid,
+-            x,
+-            residual,
+-            weight1,
+-            weight2,
+-            eps=eps,
+-            hidden_dim=hidden_dim,
+-            **config,
+-        )
++        with torch.profiler.record_function(
++            f"fused_dual_residual_rmsnorm_kernel["
++            f"output={tuple(output.shape)},"
++            f"mid={tuple(mid.shape)},"
++            f"x={tuple(x.shape)},"
++            f"residual={tuple(residual.shape)},"
++            f"weight1={tuple(weight1.shape)},"
++            f"weight2={tuple(weight2.shape)},"
++            f"dtype={output.dtype},{mid.dtype},{x.dtype},{residual.dtype},{weight1.dtype},{weight2.dtype}]"
++        ):
++            fused_dual_residual_rmsnorm_kernel[(bs,)](
++                output,
++                mid,
++                x,
++                residual,
++                weight1,
++                weight2,
++                eps=eps,
++                hidden_dim=hidden_dim,
++                **config,
++            )
+ 
+     return output, mid
+ 
+@@ -264,9 +274,16 @@ def fused_rmsnorm(x, weight, eps, autotune=False, inplace=False):
+         ),
+     }
+ 
+-    fused_rmsnorm_kernel[(bs,)](
+-        output, x, weight, eps=eps, hidden_dim=hidden_dim, **config
+-    )
++    with torch.profiler.record_function(
++        f"fused_rmsnorm_kernel["
++        f"output={tuple(output.shape)},"
++        f"x={tuple(x.shape)},"
++        f"weight={tuple(weight.shape)},"
++        f"dtype={output.dtype},{x.dtype},{weight.dtype}]"
++    ):
++        fused_rmsnorm_kernel[(bs,)](
++            output, x, weight, eps=eps, hidden_dim=hidden_dim, **config
++        )
+     return output
+ 
+ 
+diff --git a/python/sglang/srt/layers/moe/ep_moe/layer.py b/python/sglang/srt/layers/moe/ep_moe/layer.py
+index 66fbb36ea..61014672a 100644
+--- a/python/sglang/srt/layers/moe/ep_moe/layer.py
++++ b/python/sglang/srt/layers/moe/ep_moe/layer.py
+@@ -529,19 +529,31 @@ class DeepEPMoE(EPMoE):
+         ).cuda(non_blocking=True)
+         expert_start_loc = torch.empty_like(num_recv_tokens_per_expert_gpu)
+ 
+-        ep_scatter(
+-            hidden_states_fp8,
+-            hidden_states_scale,
+-            topk_idx,
+-            num_recv_tokens_per_expert_gpu,
+-            expert_start_loc,
+-            input_tensor[0],
+-            input_tensor[1],
+-            m_indices,
+-            output_index,
+-            scale_ue8m0=deep_gemm_wrapper.DEEPGEMM_SCALE_UE8M0,
+-        )
+-        dispose_tensor(hidden_states_fp8)
++        with torch.profiler.record_function(
++            f"DeepEPMoE.forward_deepgemm_contiguous.ep_scatter["
++            f"hidden_states={tuple(hidden_states_fp8.shape)},"
++            f"input_tensor={tuple(input_tensor[0].shape)},"
++            f"input_tensor={tuple(input_tensor[1].shape)},"
++            f"dtype={hidden_states_fp8.dtype},{input_tensor[0].dtype},{input_tensor[1].dtype}]"
++        ):
++            ep_scatter(
++                hidden_states_fp8,
++                hidden_states_scale,
++                topk_idx,
++                num_recv_tokens_per_expert_gpu,
++                expert_start_loc,
++                input_tensor[0],
++                input_tensor[1],
++                m_indices,
++                output_index,
++                scale_ue8m0=deep_gemm_wrapper.DEEPGEMM_SCALE_UE8M0,
++            )
++        with torch.profiler.record_function(
++            f"DeepEPMoE.forward_deepgemm_contiguous.dispose_tensor["
++            f"hidden_states_fp8={tuple(hidden_states_fp8.shape)},"
++            f"dtype={hidden_states_fp8.dtype}]"
++        ):
++            dispose_tensor(hidden_states_fp8)
+ 
+         gateup_output = torch.empty(
+             (all_tokens, N),
+@@ -550,9 +562,17 @@ class DeepEPMoE(EPMoE):
+         )
+         if not deep_gemm_wrapper.DEEPGEMM_SCALE_UE8M0:
+             input_tensor[1] = tma_align_input_scale(input_tensor[1])
+-        deep_gemm_wrapper.grouped_gemm_nt_f8f8bf16_contig(
+-            input_tensor, self.w13_weight_fp8, gateup_output, m_indices
+-        )
++        with torch.profiler.record_function(
++            f"DeepEPMoE.forward_deepgemm_contiguous.gemm0["
++            f"input_tensor={tuple(input_tensor[0].shape)},"
++            f"input_tensor_scale={tuple(input_tensor[1].shape)},"
++            f"weight={tuple(self.w13_weight_fp8[0].shape)},"
++            f"weight_scale={tuple(self.w13_weight_fp8[1].shape)},"
++            f"dtype={input_tensor[0].dtype},{input_tensor[1].dtype},{self.w13_weight_fp8[0].dtype},{self.w13_weight_fp8[1].dtype}]"
++        ):
++            deep_gemm_wrapper.grouped_gemm_nt_f8f8bf16_contig(
++                input_tensor, self.w13_weight_fp8, gateup_output, m_indices
++            )
+         del input_tensor
+         down_input = torch.empty(
+             (
+@@ -579,12 +599,20 @@ class DeepEPMoE(EPMoE):
+         del down_input
+         if not deep_gemm_wrapper.DEEPGEMM_SCALE_UE8M0:
+             down_input_scale = tma_align_input_scale(down_input_scale)
+-        deep_gemm_wrapper.grouped_gemm_nt_f8f8bf16_contig(
+-            (down_input_fp8, down_input_scale),
+-            self.w2_weight_fp8,
+-            down_output,
+-            m_indices,
+-        )
++        with torch.profiler.record_function(
++            f"DeepEPMoE.forward_deepgemm_contiguous.gemm1["
++            f"down_input={tuple(down_input_fp8.shape)},"
++            f"down_input_scale={tuple(down_input_scale.shape)},"
++            f"weight={tuple(self.w2_weight_fp8[0].shape)},"
++            f"weight_scale={tuple(self.w2_weight_fp8[1].shape)},"
++            f"dtype={down_input_fp8[0].dtype},{down_input_scale.dtype},{self.w2_weight_fp8[0].dtype},{self.w2_weight_fp8[1].dtype}]"
++        ):
++            deep_gemm_wrapper.grouped_gemm_nt_f8f8bf16_contig(
++                (down_input_fp8, down_input_scale),
++                self.w2_weight_fp8,
++                down_output,
++                m_indices,
++            )
+         del down_input_fp8, down_input_scale
+ 
+         gather_out = torch.empty(
+@@ -592,7 +620,12 @@ class DeepEPMoE(EPMoE):
+             device=hidden_states_fp8_device,
+             dtype=torch.bfloat16,
+         )
+-        ep_gather(down_output, topk_idx, topk_weights, output_index, gather_out)
++        with torch.profiler.record_function(
++            f"DeepEPMoE.forward_deepgemm_contiguous.gather["
++            f"gather_out={tuple(gather_out.shape)},"
++            f"dtype={gather_out.dtype}]"
++        ):
++            ep_gather(down_output, topk_idx, topk_weights, output_index, gather_out)
+ 
+         return gather_out
+ 
+diff --git a/python/sglang/srt/layers/moe/router.py b/python/sglang/srt/layers/moe/router.py
+index d78437f7b..1eb9020d0 100644
+--- a/python/sglang/srt/layers/moe/router.py
++++ b/python/sglang/srt/layers/moe/router.py
+@@ -135,20 +135,26 @@ def fused_moe_router_impl(
+         ),
+     }
+ 
+-    fused_moe_router_kernel[(bs,)](
+-        x,
+-        router_weight,
+-        topk_weights,
+-        topk_ids,
+-        correction_bias,
+-        is_correction_bias=is_correction_bias,
+-        num_experts=num_experts,
+-        topk=topk,
+-        moe_softcapping=moe_softcapping,
+-        moe_renormalize=False,
+-        hidden_dim=hidden_dim,
+-        **config,
+-    )
++    with torch.profiler.record_function(
++        f"fused_moe_router_kernel["
++        f"x={tuple(x.shape)},"
++        f"router_weight={tuple(router_weight.shape)},"
++        f"dtype={x.dtype},{router_weight.dtype}]"
++    ):
++        fused_moe_router_kernel[(bs,)](
++            x,
++            router_weight,
++            topk_weights,
++            topk_ids,
++            correction_bias,
++            is_correction_bias=is_correction_bias,
++            num_experts=num_experts,
++            topk=topk,
++            moe_softcapping=moe_softcapping,
++            moe_renormalize=False,
++            hidden_dim=hidden_dim,
++            **config,
++        )
+ 
+     return topk_weights, topk_ids
+ 
+diff --git a/python/sglang/srt/layers/moe/token_dispatcher/deepep.py b/python/sglang/srt/layers/moe/token_dispatcher/deepep.py
+index c711d4427..74965347d 100644
+--- a/python/sglang/srt/layers/moe/token_dispatcher/deepep.py
++++ b/python/sglang/srt/layers/moe/token_dispatcher/deepep.py
+@@ -350,27 +350,35 @@ class _DeepEPDispatcherImplNormal(_DeepEPDispatcherImplBase):
+         # However, doing this would incur an unknown synchronization error, but keeping
+         # `handle` as a member variable works.
+ 
+-        (
+-            recv_x,
+-            recv_topk_idx,
+-            recv_topk_weights,
+-            num_recv_tokens_per_expert,
+-            self.handle,
+-            event,
+-        ) = buffer.dispatch(
+-            x,
+-            topk_idx=topk_idx,
+-            topk_weights=topk_weights,
+-            num_tokens_per_rank=num_tokens_per_rank,
+-            num_tokens_per_rdma_rank=num_tokens_per_rdma_rank,
+-            is_token_in_rank=is_token_in_rank,
+-            num_tokens_per_expert=num_tokens_per_expert,
+-            previous_event=previous_event,
+-            async_finish=self.async_finish,
+-            allocate_on_comm_stream=(previous_event is not None) and self.async_finish,
+-            expert_alignment=128 if deep_gemm_wrapper.ENABLE_JIT_DEEPGEMM else 1,
+-            config=DeepEPConfig.get_instance().normal_dispatch_config,
+-        )
++        with torch.profiler.record_function(
++            f"DeepEPDispatcher._dispatch_core.x["
++            f"x_0={tuple(x[0].shape)},"
++            f"x_1={tuple(x[1].shape)},"
++            f"topk_idx={tuple(topk_idx.shape)},"
++            f"topk_weights={tuple(topk_weights.shape)},"
++            f"dtype={x[0].dtype},{x[1].dtype},{topk_idx.dtype},{topk_weights.dtype}]"
++        ):
++            (
++                recv_x,
++                recv_topk_idx,
++                recv_topk_weights,
++                num_recv_tokens_per_expert,
++                self.handle,
++                event,
++            ) = buffer.dispatch(
++                x,
++                topk_idx=topk_idx,
++                topk_weights=topk_weights,
++                num_tokens_per_rank=num_tokens_per_rank,
++                num_tokens_per_rdma_rank=num_tokens_per_rdma_rank,
++                is_token_in_rank=is_token_in_rank,
++                num_tokens_per_expert=num_tokens_per_expert,
++                previous_event=previous_event,
++                async_finish=self.async_finish,
++                allocate_on_comm_stream=(previous_event is not None) and self.async_finish,
++                expert_alignment=128 if deep_gemm_wrapper.ENABLE_JIT_DEEPGEMM else 1,
++                config=DeepEPConfig.get_instance().normal_dispatch_config,
++            )
+ 
+         get_global_expert_distribution_recorder().on_deepep_dispatch_normal(
+             num_recv_tokens_per_expert,
+@@ -431,14 +439,19 @@ class _DeepEPDispatcherImplNormal(_DeepEPDispatcherImplBase):
+ 
+     def _combine_core(self, x: torch.Tensor, previous_event):
+         buffer = self._get_buffer()
+-        combined_x, _, event = buffer.combine(
+-            x,
+-            self.handle,
+-            async_finish=self.async_finish,
+-            previous_event=previous_event,
+-            allocate_on_comm_stream=previous_event is not None,
+-            config=DeepEPConfig.get_instance().normal_combine_config,
+-        )
++        with torch.profiler.record_function(
++            f"DeepEPDispatcher._combine_core.x["
++            f"x={tuple(x.shape)},"
++            f"dtype={x.dtype}]"
++        ):
++            combined_x, _, event = buffer.combine(
++                x,
++                self.handle,
++                async_finish=self.async_finish,
++                previous_event=previous_event,
++                allocate_on_comm_stream=previous_event is not None,
++                config=DeepEPConfig.get_instance().normal_combine_config,
++            )
+         return combined_x, event
+ 
+     def _get_buffer(self):
+diff --git a/python/sglang/srt/layers/quantization/fp8_utils.py b/python/sglang/srt/layers/quantization/fp8_utils.py
+index 3ab8634ac..1693aa461 100644
+--- a/python/sglang/srt/layers/quantization/fp8_utils.py
++++ b/python/sglang/srt/layers/quantization/fp8_utils.py
+@@ -199,12 +199,23 @@ def cutlass_w8a8_block_fp8_linear_with_fallback(
+     input_2d = input.view(-1, input.shape[-1])
+     output_shape = [*input.shape[:-1], weight.shape[0]]
+ 
+-    q_input, x_scale = per_token_group_quant_fp8(
+-        input_2d, block_size[1], column_major_scales=True
+-    )
+-    output = fp8_blockwise_scaled_mm(
+-        q_input, weight.T, x_scale, weight_scale.T, out_dtype=input_2d.dtype
+-    )
++    with torch.profiler.record_function(
++        f"per_token_group_quant_fp8["
++        f"input_2d={tuple(input_2d.shape)},"
++        f"dtype={input_2d.dtype}]"
++    ):
++        q_input, x_scale = per_token_group_quant_fp8(
++            input_2d, block_size[1], column_major_scales=True
++        )
++    with torch.profiler.record_function(
++        f"w8a8_block_fp8_matmul_triton["
++        f"q_input={tuple(q_input.shape)},"
++        f"weight={tuple(weight.shape)},"
++        f"dtype={q_input.dtype},{weight.dtype}]"
++    ):
++        output = fp8_blockwise_scaled_mm(
++            q_input, weight.T, x_scale, weight_scale.T, out_dtype=input_2d.dtype
++        )
+     if bias is not None:
+         output += bias
+     return output.to(dtype=input_2d.dtype).view(*output_shape)
+diff --git a/python/sglang/srt/layers/vocab_parallel_embedding.py b/python/sglang/srt/layers/vocab_parallel_embedding.py
+index ab1ced99a..c7c8e0566 100644
+--- a/python/sglang/srt/layers/vocab_parallel_embedding.py
++++ b/python/sglang/srt/layers/vocab_parallel_embedding.py
+@@ -457,14 +457,24 @@ class VocabParallelEmbedding(torch.nn.Module):
+     def forward(self, input_):
+         if self.tp_size > 1:
+             # Build the mask.
+-            masked_input, input_mask = get_masked_input_and_mask(
+-                input_,
+-                self.shard_indices.org_vocab_start_index,
+-                self.shard_indices.org_vocab_end_index,
+-                self.shard_indices.num_org_vocab_padding,
+-                self.shard_indices.added_vocab_start_index,
+-                self.shard_indices.added_vocab_end_index,
+-            )
++            with torch.profiler.record_function(
++                f"get_masked_input_and_mask["
++                f"input_shape={tuple(input_.shape)},"
++                f"org_vocab_start={self.shard_indices.org_vocab_start_index},"
++                f"org_vocab_end={self.shard_indices.org_vocab_end_index},"
++                f"org_vocab_padding={self.shard_indices.num_org_vocab_padding},"
++                f"added_vocab_start={self.shard_indices.added_vocab_start_index},"
++                f"added_vocab_end={self.shard_indices.added_vocab_end_index},"
++                f"dtype={input_.dtype},int,int,int,int,int]"
++            ):
++                masked_input, input_mask = get_masked_input_and_mask(
++                    input_,
++                    self.shard_indices.org_vocab_start_index,
++                    self.shard_indices.org_vocab_end_index,
++                    self.shard_indices.num_org_vocab_padding,
++                    self.shard_indices.added_vocab_start_index,
++                    self.shard_indices.added_vocab_end_index,
++                )
+         else:
+             masked_input = input_
+         # Get the embeddings.
+diff --git a/python/sglang/srt/managers/schedule_batch.py b/python/sglang/srt/managers/schedule_batch.py
+index 3bfb31b6b..81306ba2b 100644
+--- a/python/sglang/srt/managers/schedule_batch.py
++++ b/python/sglang/srt/managers/schedule_batch.py
+@@ -1288,15 +1288,25 @@ class ScheduleBatch(ScheduleBatchDisaggregationDecodeMixin):
+         if support_triton(global_server_args_dict.get("attention_backend")):
+             # TODO: some tensors can be reused for ForwardBatchInfo (e.g., extend_lens, cumsum_start)
+ 
+-            write_req_to_token_pool_triton[(bs,)](
+-                self.req_to_token_pool.req_to_token,
+-                req_pool_indices_tensor,
+-                prefix_lens_tensor,
+-                seq_lens_tensor,
+-                extend_lens_tensor,
+-                out_cache_loc,
+-                self.req_to_token_pool.req_to_token.shape[1],
+-            )
++            with torch.profiler.record_function(
++                f"write_req_to_token_pool_triton["
++                f"req_to_token={tuple(self.req_to_token_pool.req_to_token.shape)},"
++                f"req_pool_indices_tensor={tuple(req_pool_indices_tensor.shape)},"
++                f"prefix_lens_tensor={tuple(prefix_lens_tensor.shape)},"
++                f"seq_lens_tensor={tuple(seq_lens_tensor.shape)},"
++                f"extend_lens_tensor={tuple(extend_lens_tensor.shape)},"
++                f"out_cache_loc={tuple(out_cache_loc.shape)},"
++                f"dtype={self.req_to_token_pool.req_to_token.dtype},{req_pool_indices_tensor.dtype},{prefix_lens_tensor.dtype},{seq_lens_tensor.dtype},{extend_lens_tensor.dtype},{out_cache_loc.dtype}]"
++            ):
++                write_req_to_token_pool_triton[(bs,)](
++                    self.req_to_token_pool.req_to_token,
++                    req_pool_indices_tensor,
++                    prefix_lens_tensor,
++                    seq_lens_tensor,
++                    extend_lens_tensor,
++                    out_cache_loc,
++                    self.req_to_token_pool.req_to_token.shape[1],
++                )
+         else:
+             pt = 0
+             for i in range(bs):
+diff --git a/python/sglang/srt/model_executor/forward_batch_info.py b/python/sglang/srt/model_executor/forward_batch_info.py
+index 4e73dd9ae..f8d3d0468 100644
+--- a/python/sglang/srt/model_executor/forward_batch_info.py
++++ b/python/sglang/srt/model_executor/forward_batch_info.py
+@@ -421,11 +421,18 @@ class ForwardBatch:
+             ).to(device, non_blocking=True)
+             ret.extend_num_tokens = batch.extend_num_tokens
+             if support_triton(model_runner.server_args.attention_backend):
+-                positions, ret.extend_start_loc = compute_position_triton(
+-                    ret.extend_prefix_lens,
+-                    ret.extend_seq_lens,
+-                    ret.extend_num_tokens,
+-                )
++                with torch.profiler.record_function(
++                    f"compute_position_triton["
++                    f"prefix_lens={tuple(ret.extend_prefix_lens.shape)},"
++                    f"seq_lens={tuple(ret.extend_seq_lens.shape)},"
++                    f"num_tokens={ret.extend_num_tokens},"
++                    f"dtype={ret.extend_prefix_lens.dtype},{ret.extend_seq_lens.dtype},int]"
++                ):
++                    positions, ret.extend_start_loc = compute_position_triton(
++                        ret.extend_prefix_lens,
++                        ret.extend_seq_lens,
++                        ret.extend_num_tokens,
++                    )
+             else:
+                 positions, ret.extend_start_loc = compute_position_torch(
+                     ret.extend_prefix_lens, ret.extend_seq_lens
+-- 
+2.43.0
+

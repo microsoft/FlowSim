@@ -1,0 +1,311 @@
+From 7712e7bd269d2fc688d78b223f2062836d913e09 Mon Sep 17 00:00:00 2001
+From: Tao Zhang <zhangt@microsoft.com>
+Date: Tue, 26 Aug 2025 22:12:58 -0700
+Subject: [PATCH 3/3] Support batched send/recv/handle requests
+
+---
+ python/sglang/bench_serving.py                | 140 ++++++++++++++++--
+ python/sglang/srt/managers/scheduler.py       |  10 +-
+ .../sglang/srt/managers/tokenizer_manager.py  |  27 ++--
+ python/sglang/utils.py                        |   2 +-
+ 4 files changed, 148 insertions(+), 31 deletions(-)
+
+diff --git a/python/sglang/bench_serving.py b/python/sglang/bench_serving.py
+index 3ba4eae0f..137bd66df 100644
+--- a/python/sglang/bench_serving.py
++++ b/python/sglang/bench_serving.py
+@@ -21,6 +21,7 @@ import sys
+ import time
+ import traceback
+ import warnings
++import glob
+ from argparse import ArgumentParser
+ from dataclasses import dataclass, field
+ from datetime import datetime
+@@ -679,6 +680,12 @@ def get_dataset(args, tokenizer):
+             apply_chat_template=args.apply_chat_template,
+             random_sample=True,
+         )
++    elif args.dataset_name == "defined-len":
++        input_requests = generate_defined_len_requests(
++            lens_str=args.prefill_decode_lens,
++            num_prompts=args.num_prompts,
++            tokenizer=tokenizer,
++        )
+     else:
+         raise ValueError(f"Unknown dataset: {args.dataset_name}")
+     return input_requests
+@@ -1112,6 +1119,28 @@ def sample_random_requests(
+     print(f"#Output tokens: {np.sum(output_lens)}")
+     return input_requests
+ 
++def generate_defined_len_requests(
++    lens_str: str,
++    num_prompts: int,
++    tokenizer: PreTrainedTokenizerBase,
++) -> List[DatasetRow]:
++    # Parse "prefill:decode" format
++    try:
++        prefill_len, decode_len = tuple(map(int, lens_str.split(":")))
++    except Exception as e:
++        raise ValueError(f"Invalid lens_str '{lens_str}', expected 'prefill:decode'") from e
++    
++    input_requests = []
++    for _ in range(num_prompts):
++        input_ids = random.choices(list(tokenizer.get_vocab().values()), k=prefill_len)
++        input_requests.append(
++            DatasetRow(
++                prompt=input_ids,
++                prompt_len=prefill_len,
++                output_len=decode_len,
++            )
++        )
++    return input_requests
+ 
+ def gen_prompt(tokenizer, token_num):
+     """Generate a random prompt of specified token length using tokenizer vocabulary."""
+@@ -1326,6 +1355,7 @@ async def benchmark(
+     pd_separated: bool = False,
+     flush_cache: bool = False,
+     warmup_requests: int = 1,
++    batched_requests: bool = False,
+ ):
+     if backend in ASYNC_REQUEST_FUNCS:
+         request_func = ASYNC_REQUEST_FUNCS[backend]
+@@ -1405,21 +1435,17 @@ async def benchmark(
+     # Run all requests
+     benchmark_start_time = time.perf_counter()
+     tasks: List[asyncio.Task] = []
+-    async for request in get_request(input_requests, request_rate):
+-        if lora_names is not None and len(lora_names) != 0:
+-            idx = random.randint(0, len(lora_names) - 1)
+-            lora_name = lora_names[idx]
+-        else:
+-            lora_name = None
+-
++    
++    # Send all requests in batch
++    if batched_requests:        
+         request_func_input = RequestFuncInput(
+             model=model_id,
+-            prompt=request.prompt,
++            prompt=[request.prompt for request in input_requests],
+             api_url=api_url,
+-            prompt_len=request.prompt_len,
+-            output_len=request.output_len,
++            prompt_len=input_requests[0].prompt_len,
++            output_len=input_requests[0].output_len,
+             lora_name=lora_name,
+-            image_data=request.image_data,
++            image_data=input_requests[0].image_data,
+             extra_request_body=extra_request_body,
+         )
+ 
+@@ -1428,6 +1454,32 @@ async def benchmark(
+                 limited_request_func(request_func_input=request_func_input, pbar=pbar)
+             )
+         )
++    else:
++    # Send requests one by one according to the request rate
++        async for request in get_request(input_requests, request_rate):
++            if lora_names is not None and len(lora_names) != 0:
++                idx = random.randint(0, len(lora_names) - 1)
++                lora_name = lora_names[idx]
++            else:
++                lora_name = None
++
++            request_func_input = RequestFuncInput(
++                model=model_id,
++                prompt=request.prompt,
++                api_url=api_url,
++                prompt_len=request.prompt_len,
++                output_len=request.output_len,
++                lora_name=lora_name,
++                image_data=request.image_data,
++                extra_request_body=extra_request_body,
++            )
++
++            tasks.append(
++                asyncio.create_task(
++                    limited_request_func(request_func_input=request_func_input, pbar=pbar)
++                )
++            )
++            
+     outputs: List[RequestFuncOutput] = await asyncio.gather(*tasks)
+ 
+     # Stop profiler
+@@ -1748,6 +1800,10 @@ def run_benchmark(args_: argparse.Namespace):
+     tokenizer_id = args.tokenizer if args.tokenizer is not None else args.model
+     tokenizer = get_tokenizer(tokenizer_id)
+     input_requests = get_dataset(args, tokenizer)
++    
++    # Set batched sending flag
++    if not hasattr(args, "batched_requests"):
++        args.batched_requests = False
+ 
+     # compatible with SimpleNamespace
+     if not hasattr(args, "flush_cache"):
+@@ -1770,6 +1826,7 @@ def run_benchmark(args_: argparse.Namespace):
+             pd_separated=args.pd_separated,
+             flush_cache=args.flush_cache,
+             warmup_requests=args.warmup_requests,
++            batched_requests=args.batched_requests,
+         )
+     )
+ 
+@@ -1818,8 +1875,8 @@ if __name__ == "__main__":
+     parser.add_argument(
+         "--dataset-name",
+         type=str,
+-        default="sharegpt",
+-        choices=["sharegpt", "random", "random-ids", "generated-shared-prefix", "mmmu"],
++        default="defined-len",
++        choices=["sharegpt", "random", "random-ids", "generated-shared-prefix", "mmmu", "defined-len"],
+         help="Name of the dataset to benchmark on.",
+     )
+     parser.add_argument(
+@@ -2002,5 +2059,62 @@ if __name__ == "__main__":
+         default=256,
+         help="Target length in tokens for outputs in generated-shared-prefix dataset",
+     )
++    parser.add_argument(
++        "--prefill-decode-lens",
++        type=str,
++        default="1024:2",
++        help="Prefill:decode pair. E.g. 1024:2 means prefill 1024 tokens, decode 2 tokens."
++        "When used with --batched-requests, all requests in a batch will have the same prefill:decode lengths.",
++    )
++    
++    parser.add_argument(
++        "--batched-requests",
++        action="store_true",
++        help="Send requests in a single batch (only for backends that support it)",
++    )
++
+     args = parser.parse_args()
+     run_benchmark(args)
++    
++    profile_dir = os.environ.get("SGLANG_TORCH_PROFILER_DIR", "./profile")
++    profile_files = glob.glob(os.path.join(profile_dir, "*.json.gz"))
++
++    # Check if profile_map.jsonl exists and read recorded profile files
++    recorded = set()
++    if os.path.exists("profile_map.jsonl"):
++        with open("profile_map.jsonl") as f:
++            for line in f:
++                try:
++                    recorded.add(json.loads(line)["profile_file"])
++                except Exception:
++                    pass
++
++    # Find new profile files that are not recorded
++    new_profiles = [f for f in profile_files if f not in recorded]
++    if new_profiles:
++        latest_profile = max(new_profiles, key=os.path.getmtime)
++    else:
++        latest_profile = None
++
++    # Record mapping of profile file to server info
++    if latest_profile:
++        if getattr(args, "base_url", None):
++            server_info_url = args.base_url.rstrip("/") + "/get_server_info"
++        else:
++            server_info_url = f"http://{args.host}:{args.port}/get_server_info"
++
++        try:
++            server_info = requests.get(server_info_url).json()
++        except Exception as e:
++            server_info = {"error": str(e)}
++        profile_map = {
++            "profile_file": latest_profile,
++            "server_args": server_info,
++            "serving_args": vars(args),
++            "timestamp": datetime.now().isoformat(),
++        }
++        with open("profile_map.jsonl", "a") as f:
++            f.write(json.dumps(profile_map) + "\n")
++        print(f"Profile mapping recorded: {profile_map}")
++    else:
++        print("No new profile file found.")
+diff --git a/python/sglang/srt/managers/scheduler.py b/python/sglang/srt/managers/scheduler.py
+index 5f9b7f20f..ae0eb3e54 100644
+--- a/python/sglang/srt/managers/scheduler.py
++++ b/python/sglang/srt/managers/scheduler.py
+@@ -496,6 +496,7 @@ class Scheduler(
+         # Init request dispatcher
+         self._request_dispatcher = TypeBasedDispatcher(
+             [
++                (List[TokenizedGenerateReqInput], self.batch_handle_generate_request),
+                 (TokenizedGenerateReqInput, self.handle_generate_request),
+                 (TokenizedEmbeddingReqInput, self.handle_embedding_request),
+                 (FlushCacheReqInput, self.flush_cache_wrapped),
+@@ -1219,7 +1220,14 @@ class Scheduler(
+             self.grammar_queue.append(req)
+         else:
+             self._add_request_to_queue(req)
+-
++            
++    def batch_handle_generate_request(
++        self,
++        recv_reqs: List[TokenizedGenerateReqInput],
++    ):
++        for req in recv_reqs:
++            self.handle_generate_request(req)
++    
+     def _add_request_to_queue(self, req: Req):
+         req.queue_time_start = time.perf_counter()
+         if self.disaggregation_mode == DisaggregationMode.PREFILL:
+diff --git a/python/sglang/srt/managers/tokenizer_manager.py b/python/sglang/srt/managers/tokenizer_manager.py
+index cbd1c7332..13c6bd9d2 100644
+--- a/python/sglang/srt/managers/tokenizer_manager.py
++++ b/python/sglang/srt/managers/tokenizer_manager.py
+@@ -836,22 +836,17 @@ class TokenizerManager:
+                     generators.append(self._wait_one_response(tmp_obj, state, request))
+                     rids.append(tmp_obj.rid)
+             else:
+-                # Sequential tokenization and processing
+-                with (
+-                    input_blocker_guard_region(send_to_scheduler=self.send_to_scheduler)
+-                    if get_bool_env_var("SGLANG_ENABLE_COLOCATED_BATCH_GEN")
+-                    else nullcontext()
+-                ):
+-                    for i in range(batch_size):
+-                        tmp_obj = obj[i]
+-                        tokenized_obj = await self._tokenize_one_request(tmp_obj)
+-                        state = self._send_one_request(
+-                            tmp_obj, tokenized_obj, created_time
+-                        )
+-                        generators.append(
+-                            self._wait_one_response(tmp_obj, state, request)
+-                        )
+-                        rids.append(tmp_obj.rid)
++                # Send all requests
++                objs = [obj[i] for i in range(batch_size)]
++                tokenized_objs = await asyncio.gather(
++                    *(self._tokenize_one_request(obj) for obj in objs)
++                )
++                states = [ReqState([], False, asyncio.Event(), obj, created_time=created_time) for obj in objs]
++                for i, obj in enumerate(objs):
++                    self.rid_to_state[obj.rid] = states[i]
++                    generators.append(self._wait_one_response(obj, states[i], request))
++                    rids.append(obj.rid)
++                self.send_to_scheduler.send_pyobj(tokenized_objs)
+         else:
+             # FIXME: When using batch and parallel_sample_num together, the perf is not optimal.
+             if batch_size > 128:
+diff --git a/python/sglang/utils.py b/python/sglang/utils.py
+index 0ba6d46c3..1c75790ef 100644
+--- a/python/sglang/utils.py
++++ b/python/sglang/utils.py
+@@ -475,7 +475,7 @@ class TypeBasedDispatcher:
+ 
+     def __call__(self, obj: Any):
+         for ty, fn in self._mapping:
+-            if isinstance(obj, ty):
++            if isinstance(obj, ty.__origin__ if hasattr(ty, "__origin__") else ty):
+                 return fn(obj)
+         raise ValueError(f"Invalid object: {obj}")
+ 
+-- 
+2.43.0
+

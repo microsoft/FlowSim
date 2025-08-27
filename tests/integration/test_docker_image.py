@@ -4,18 +4,10 @@ import os
 import re
 import time
 
-SG_LANG_DIR = "/workloadsim/workload/framework/sglang/python/sglang"
+from utils import _write_artifact
+from utils import ARTIFACT_ENV, DEFAULT_ARTIFACT_DIR, SG_LANG_DIR
+
 MODEL_PATH = "/workloadsim/workload/models/configs/deepseek"
-ARTIFACT_ENV = "PYTEST_ARTIFACT_DIR"
-DEFAULT_ARTIFACT_DIR = os.path.join(os.getcwd(), "test-artifacts")
-
-
-def _write_artifact(artifact_dir: str, name: str, content: str):
-    os.makedirs(artifact_dir, exist_ok=True)
-    path = os.path.join(artifact_dir, name)
-    with open(path, "w", encoding="utf-8") as f:
-        f.write(content)
-    return path
 
 
 @pytest.mark.parametrize("tp", [1, 2])

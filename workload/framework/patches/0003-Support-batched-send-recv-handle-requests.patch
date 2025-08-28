@@ -1,7 +1,7 @@
 From 7712e7bd269d2fc688d78b223f2062836d913e09 Mon Sep 17 00:00:00 2001
 From: Tao Zhang <zhangt@microsoft.com>
 Date: Tue, 26 Aug 2025 22:12:58 -0700
-Subject: [PATCH 3/4] Support batched send/recv/handle requests
+Subject: [PATCH 3/5] Support batched send/recv/handle requests
 
 ---
  python/sglang/bench_serving.py                | 140 ++++++++++++++++--

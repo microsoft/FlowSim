@@ -1,0 +1,63 @@
+From 4917632bff3e58af4d6ac297f8bda9cbae82f40c Mon Sep 17 00:00:00 2001
+From: Tao Zhang <zhangt@microsoft.com>
+Date: Wed, 27 Aug 2025 20:30:45 -0700
+Subject: [PATCH 5/5] Fix bug on profiler and dp attention
+
+---
+ python/sglang/srt/layers/dp_attention.py           | 14 ++++++++------
+ .../srt/managers/scheduler_profiler_mixin.py       |  4 +++-
+ 2 files changed, 11 insertions(+), 7 deletions(-)
+
+diff --git a/python/sglang/srt/layers/dp_attention.py b/python/sglang/srt/layers/dp_attention.py
+index 55db13336..72873484f 100644
+--- a/python/sglang/srt/layers/dp_attention.py
++++ b/python/sglang/srt/layers/dp_attention.py
+@@ -263,9 +263,10 @@ def _dp_gather_via_all_reduce(
+     assert global_tokens.is_contiguous()
+ 
+     if local_tokens.shape[0] > 0 and (is_partial or get_attention_tp_rank() == 0):
+-        assert (
+-            local_tokens.untyped_storage() is not global_tokens.untyped_storage()
+-        ), "aliasing between global_tokens and local_tokens not allowed"
++        if local_tokens.untyped_storage() is global_tokens.untyped_storage():
++            # dp_gather is an in-place operation and requires input and output tensors to not be aliased.
++            # so we create a separate buffer if they share the same storage.
++            global_tokens = torch.empty_like(global_tokens)
+ 
+         memcpy_triton(
+             global_tokens, local_tokens, 0, local_start_pos, local_num_tokens, False
+@@ -346,9 +347,10 @@ def dp_scatter(
+     assert local_tokens.is_contiguous()
+     assert global_tokens.is_contiguous()
+     if local_tokens.shape[0] > 0:
+-        assert (
+-            local_tokens.untyped_storage() is not global_tokens.untyped_storage()
+-        ), "aliasing between local_tokens and global_tokens not allowed"
++        if local_tokens.untyped_storage() is global_tokens.untyped_storage():
++            # dp_scatter is an in-place operation and requires input and output tensors to not be aliased.
++            # so we create a separate buffer if they share the same storage.
++            local_tokens = torch.empty_like(local_tokens)
+ 
+         memcpy_triton(
+             local_tokens, global_tokens, 0, local_start_pos, local_num_tokens, True
+diff --git a/python/sglang/srt/managers/scheduler_profiler_mixin.py b/python/sglang/srt/managers/scheduler_profiler_mixin.py
+index 3d061a8fe..382070cc7 100644
+--- a/python/sglang/srt/managers/scheduler_profiler_mixin.py
++++ b/python/sglang/srt/managers/scheduler_profiler_mixin.py
+@@ -132,10 +132,12 @@ class SchedulerProfilerMixin:
+             self.rpd_profiler.rangePush("", "rpd profile range", "")
+             self.profile_in_progress = True
+         elif torchprof_activities:
++            experimental_config = torch._C._profiler._ExperimentalConfig(profile_all_threads=True)
+             self.torch_profiler = torch.profiler.profile(
+                 activities=torchprof_activities,
+                 with_stack=with_stack if with_stack is not None else True,
+-                record_shapes=record_shapes if record_shapes is not None else False,
++                record_shapes=record_shapes if record_shapes is not None else True,
++                experimental_config=experimental_config
+             )
+             self.torch_profiler.start()
+             self.profile_in_progress = True
+-- 
+2.43.0
+

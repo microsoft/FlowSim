@@ -1,7 +1,7 @@
 From 68e998d671a0209b560be209de01fa5e89d3df8d Mon Sep 17 00:00:00 2001
 From: Tao Zhang <zhangt@microsoft.com>
 Date: Wed, 27 Aug 2025 10:00:52 -0700
-Subject: [PATCH 4/4] Add balanced moe setting via env variable
+Subject: [PATCH 4/5] Add balanced moe setting via env variable
 
 ---
  .../layers/moe/fused_moe_triton/fused_moe.py   | 11 ++++++++++-

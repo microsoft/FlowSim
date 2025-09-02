@@ -1,7 +1,7 @@
 import os
 
 ARTIFACT_ENV = "PYTEST_ARTIFACT_DIR"
-DEFAULT_ARTIFACT_DIR = os.path.join(os.getcwd(), "test-artifacts")
+DEFAULT_ARTIFACT_DIR = "/workloadsim/tests/test-artifacts"
 SG_LANG_DIR = "/workloadsim/workload/framework/sglang/python/sglang"
 
 

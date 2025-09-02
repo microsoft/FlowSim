@@ -4,8 +4,8 @@ import os
 import re
 import time
 
-from utils import _write_artifact
-from utils import ARTIFACT_ENV, DEFAULT_ARTIFACT_DIR, SG_LANG_DIR
+from tests.utils import _write_artifact
+from tests.utils import ARTIFACT_ENV, DEFAULT_ARTIFACT_DIR, SG_LANG_DIR
 
 MODEL_PATH = "/workloadsim/workload/models/configs/deepseek"
 

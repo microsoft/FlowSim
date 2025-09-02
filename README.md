@@ -54,4 +54,4 @@ See the [sglang documentation](https://docs.sglang.ai/developer_guide/benchmark_
 
 ## Tests
 
-Tests are located in the `tests` directory. To execute tests, run `pytest <test file>` to generate results.
+Tests are located in the `tests` directory. To execute tests, run `pytest <test file>` in the project root folder to generate results.

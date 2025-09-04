@@ -29,9 +29,9 @@ index d2c65d973..bc590c564 100644
 +        if balanced_moe:
 +            logger.warning("Using balanced MoE with uniform topk ids. This is for benchmarking only!")
 +            if curr_topk_ids.numel() > 0:
-+                num_tokens, k = curr_topk_ids.shape
-+                expert_ids_uniform = torch.arange(E, device=curr_topk_ids.device).repeat((num_tokens * k + E - 1) // E)[:num_tokens * k]
-+                expert_ids_uniform = expert_ids_uniform.view(num_tokens, k)
++                topk_num_tokens, k = curr_topk_ids.shape
++                expert_ids_uniform = torch.arange(E, device=curr_topk_ids.device).repeat((topk_num_tokens * k + E - 1) // E)[:topk_num_tokens * k]
++                expert_ids_uniform = expert_ids_uniform.view(topk_num_tokens, k)
 +                curr_topk_ids = expert_ids_uniform
 +        # --- Patch end ---
  
@@ -59,12 +59,12 @@ index b5b13d9ac..ac36d2d2e 100644
 +            logger.warning("Using balanced MoE with uniform topk ids. This is for benchmarking only!")
 +            # Uniformly assign different experts to each token's top-k selection
 +            if topk_idx.numel() > 0:
-+                num_tokens, k = topk_idx.shape
++                topk_num_tokens, k = topk_idx.shape
 +                E = self.num_experts
 +                expert_ids_uniform = torch.arange(
 +                    E, device=topk_idx.device
-+                ).repeat((num_tokens * k + E - 1) // E)[:num_tokens * k]
-+                expert_ids_uniform = expert_ids_uniform.view(num_tokens, k)
++                ).repeat((topk_num_tokens * k + E - 1) // E)[:topk_num_tokens * k]
++                expert_ids_uniform = expert_ids_uniform.view(topk_num_tokens, k)
 +                topk_idx = expert_ids_uniform
 +                topk_weights = torch.full_like(
 +                    topk_weights, 1.0 / k

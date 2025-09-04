@@ -1,3 +1,6 @@
 [submodule "workload/framework/sglang"]
 	path = workload/framework/sglang
 	url = https://github.com/sgl-project/sglang
+[submodule "third_party/nccl-tests"]
+	path = third_party/nccl-tests
+	url = https://github.com/NVIDIA/nccl-tests

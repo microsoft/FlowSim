@@ -5,6 +5,7 @@ import os
 
 from collections import defaultdict
 import re
+import simulator.benchmarks.nccl_benchmarks as nb
 
 
 class BaseKernelInfoParser:
@@ -48,7 +49,9 @@ class BaseKernelInfoParser:
         ]
     """
 
-    def __init__(self, file_path: str):
+    def __init__(
+        self, file_path: str, TP: int = 8, enable_comm_calibration: bool = True
+    ) -> None:
         """Initializes the BaseKernelInfoParser object.
 
         Loads and parses kernel trace events from the specified gzipped JSON file,
@@ -80,9 +83,17 @@ class BaseKernelInfoParser:
         self.individual_info = []
         self.aggregate_kernel_info = []
         self.total_duration = 0
+        self.tensor_parallelism = (
+            TP  # Number of GPUs in the system for Tensor Parallelism
+        )
 
         self._load_events()
         self._parse_events()
+
+        # By default calibrate communication kernels using NCCL benchmarks
+        # User can opt to disable communication time incase it's ignored in simulation
+        if enable_comm_calibration:
+            self._calibrate_communication_kernels()
 
     def _load_events(self) -> None:
         """
@@ -173,9 +184,10 @@ class BaseKernelInfoParser:
                 # correlation id and where the stack contains a LaunchKernel entry.
                 # Reason: we want to associate user-facing ids (External id / correlation)
                 # with the higher-level call context that launched GPU kernels.
-                if (
-                    external_id is not None or correlation_id is not None
-                ) and "LaunchKernel" in stack_trace:
+                if (external_id is not None or correlation_id is not None) and (
+                    "LaunchKernel" in stack_trace
+                    or "LaunchCooperativeKernel" in stack_trace
+                ):
                     if external_id is not None:
                         extid_to_stack[external_id] = stack_trace
                     elif correlation_id is not None:
@@ -391,6 +403,153 @@ class BaseKernelInfoParser:
 
         return self.individual_info
 
+    def _calibrate_communication_kernels(self) -> None:
+        """
+        Calibrates the durations of communication kernels (e.g., all_reduce, all_gather)
+        in self.individual_info using NCCL benchmarks and replaces the sampled durations.
+
+        Args:
+            None. Operates on and updates self.individual_info and uses
+            self.tensor_parallelism to parameterize NCCL benchmarking.
+
+        Returns:
+            None.
+
+        Notes:
+            - [Important] This function must be called after _parse_events()
+            - Durations in self.individual_info are updated in-place.
+            - A local cache of profiled durations is used to reduce repeated benchmarking.
+        """
+        pytorch_to_nccl_dtype = {
+            "c10::BFloat16": "bfloat16",
+            "torch.bfloat16": "bfloat16",
+            "TensorList": "bfloat16",  # Assuming TensorList is treated as bfloat16 for NCCL
+        }
+        pytorch_to_nccl_byte = {
+            "c10::BFloat16": 2,
+            "torch.bfloat16": 2,
+            "TensorList": 2,
+        }
+
+        # Cache to store profiled durations for (name, dtype, size)
+        comm_profile_cache = {}
+
+        for i, (
+            name,
+            dims,
+            input_type,
+            roles,
+            desc,
+            duration,
+            op,
+            operation,
+            source_code,
+            call_stack,
+        ) in enumerate(self.individual_info):
+            stack_parts = [p.strip() for p in call_stack.split("<-")]
+            if len(stack_parts) > 1:
+                kernel_impl = stack_parts[1]
+            else:
+                kernel_impl = stack_parts[0] if stack_parts else ""
+
+            if kernel_impl == "nccl:all_reduce":
+                # nccl's all_reduce kernel
+                shape = dims[0][0]
+                dtype = input_type[0]
+                size = shape[0] * shape[1] * pytorch_to_nccl_byte.get(dtype)
+                cache_key = (name, dtype, size)
+                if cache_key in comm_profile_cache:
+                    profiled_duration = comm_profile_cache[cache_key]
+                else:
+                    # Parameters:
+                    # -b: min bytes
+                    # -e: max bytes
+                    # -g: number of GPUs
+                    # -d: data type
+                    profiled_duration = nb.run_nccl_all_reduce_perf(
+                        cmd_path="/workloadsim/third_party/nccl-tests/build/all_reduce_perf",
+                        b=str(size),
+                        e=str(size),
+                        g=str(self.tensor_parallelism),
+                        d=pytorch_to_nccl_dtype.get(dtype),
+                    )
+                    comm_profile_cache[cache_key] = profiled_duration
+                self.individual_info[i] = (
+                    name,
+                    dims,
+                    input_type,
+                    roles,
+                    desc,
+                    profiled_duration,
+                    op,
+                    operation,
+                    source_code,
+                    call_stack,
+                )
+            elif kernel_impl == "sgl_kernel::all_reduce":
+                # Sglang's custom all_reduce kernel
+                shape = dims[1]
+                dtype = input_type[1]
+                size = shape[0] * shape[1] * pytorch_to_nccl_byte.get(dtype)
+                cache_key = (name, dtype, size)
+                if cache_key in comm_profile_cache:
+                    profiled_duration = comm_profile_cache[cache_key]
+                else:
+                    profiled_duration = nb.run_nccl_all_reduce_perf(
+                        cmd_path="/workloadsim/third_party/nccl-tests/build/all_reduce_perf",
+                        b=str(size),
+                        e=str(size),
+                        g=str(self.tensor_parallelism),
+                        d=pytorch_to_nccl_dtype.get(dtype),
+                    )
+                    comm_profile_cache[cache_key] = profiled_duration
+                self.individual_info[i] = (
+                    name,
+                    dims,
+                    input_type,
+                    roles,
+                    desc,
+                    profiled_duration,
+                    op,
+                    operation,
+                    source_code,
+                    call_stack,
+                )
+            elif kernel_impl == "nccl:_all_gather_base":
+                # nccl's all_gather kernel
+                shape = dims[0]
+                dtype = input_type[0]
+                size = shape[0] * shape[1] * pytorch_to_nccl_byte.get(dtype)
+                cache_key = (name, dtype, size)
+                if cache_key in comm_profile_cache:
+                    profiled_duration = comm_profile_cache[cache_key]
+                else:
+                    profiled_duration = nb.run_nccl_all_gather_perf(
+                        cmd_path="/workloadsim/third_party/nccl-tests/build/all_gather_perf",
+                        b=str(size),
+                        e=str(size),
+                        g=str(self.tensor_parallelism),
+                        d=pytorch_to_nccl_dtype.get(dtype),
+                    )
+                    comm_profile_cache[cache_key] = profiled_duration
+                self.individual_info[i] = (
+                    name,
+                    dims,
+                    input_type,
+                    roles,
+                    desc,
+                    profiled_duration,
+                    op,
+                    operation,
+                    source_code,
+                    call_stack,
+                )
+            elif op == "all_reduce" or op == "all_gather":
+                print(f"Unsupported communication kernel in benchmark: {name}")
+            else:
+                # Skip non-communication kernels
+                continue
+
     def get_aggregate_kernel_info(self) -> list[tuple]:
         """
         Aggregates kernel profiling data by grouping entries with identical name,
@@ -398,7 +557,7 @@ class BaseKernelInfoParser:
 
         Returns:
             list: A list mapping each unique (name, dims, input_type) combination
-            to its aggregated profiling data. 
+            to its aggregated profiling data.
         """
         # Create a dictionary to store folded information
         folded_info = {}
@@ -455,7 +614,7 @@ class BaseKernelInfoParser:
     def save_individual_csv(self, output_dir: str = ".") -> None:
         """
         Writes the contents of `self.individual_info` to a CSV file in the specified
-        output directory. 
+        output directory.
 
         Args:
             output_dir (str): Directory where the CSV file will be saved. Defaults to

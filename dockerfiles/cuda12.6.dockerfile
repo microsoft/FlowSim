@@ -160,5 +160,9 @@ RUN git submodule update --init --recursive
 WORKDIR /workloadsim/workload/framework/sglang
 RUN python3 -m pip install -e "python[all]"
 
+# Build nccl-tests
+WORKDIR /workloadsim/third_party/nccl-tests
+RUN make -j ${NUM_MAKE_JOBS}
+
 WORKDIR /workloadsim
 CMD ["/bin/bash"]

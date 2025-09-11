@@ -95,6 +95,9 @@ class BaseKernelInfoParser:
         if enable_comm_calibration:
             self._calibrate_communication_kernels()
 
+        # Add annotations from kernel database
+        self.post_process_with_db(db_path="/workloadsim/kernels.json")
+
     def _load_events(self) -> None:
         """
         Loads and parses kernel trace events from a gzipped JSON file.
@@ -549,6 +552,218 @@ class BaseKernelInfoParser:
             else:
                 # Skip non-communication kernels
                 continue
+
+    def post_process_with_db(
+        self, db_path: str = "/workloadsim/kernels.json"
+    ) -> None:
+        """
+        Post-process the individual kernel info with the kernel database.
+        Post-prcessing logic:
+        1. Load the kernel database from the specified JSON file.
+        2. For each kernel in self.individual_info, attempt to find a matching entry
+           in the database using either kernel_name or kernel_implementation.
+        3. If a match is found, update the kernel's fields with information from the database,
+        4. If no match is found, add the kernel to unknown_kernels.json and ask user to update.
+
+        Arguments:
+            db_path (str): Path to the kernel database JSON file to use for enrichment. Defaults to '/workloadsim/kernels.json'.
+        Returns:
+            None. Modifies self.individual_info in-place and may create/update '/workloadsim/unknown_kernels.json'.
+
+        Example Database Entry:
+        {
+            "kernel_name": "sm90_xmma_gemm_bf16bf16_bf16f32_f32_tn_n_tilesize64x64x64_warpgroupsize1x1x1_execute_segment_k_off_kernel__5x_cublas",
+            "kernel_implementation": "aten::mm",
+            "op_mapping": "matmul",
+            "operation": "out = mat1 @ mat2",
+            "source_code": "mm(Tensor self, Tensor mat2) -> Tensor",
+            "call_stack": "cudaLaunchKernelExC <- aten::mm <- aten::matmul <- <built-in method matmul of type object at 0x7352e621fec0> <- sglang/srt/layers/logits_processor.py(435): _get_logits <- sglang/srt/layers/logits_processor.py(242): forward <- torch/nn/modules/module.py(1743): _call_impl <- nn.Module: LogitsProcessor_0 <- sglang/srt/models/gpt2.py(249): forward <- sglang/srt/model_executor/model_runner.py(1151): forward_extend <- sglang/srt/model_executor/model_runner.py(1208): _forward_raw <- sglang/srt/model_executor/model_runner.py(1187): forward <- sglang/bench_one_batch.py(233): extend <- torch/utils/_contextlib.py(113): decorate_context <- sglang/bench_one_batch.py(389): latency_test_run_once <- sglang/bench_one_batch.py(499): latency_test <- sglang/bench_one_batch.py(548): main <- sglang/bench_one_batch.py(589): <module> <- runpy.py(86): _run_code <- runpy.py(196): _run_module_as_main",
+            "params": [
+                {
+                    "id": 0,
+                    "role": "input",
+                    "example_dim": [1, 12288],
+                    "example_dtype": "c10::BFloat16",
+                    "description": "mat1"
+                },
+                {
+                    "id": 1,
+                    "role": "input",
+                    "example_dim": [12288, 6288],
+                    "example_dtype": "c10::BFloat16",
+                    "description": "mat2"
+                }
+            ]
+        }
+
+        Notes:
+        1. Role: Input/Ouput, Annotates the I/O relationship of each variable in dimension
+        2. Description: What is the corresponding variable of each dimension
+        3. operation: The mathematical operation of a kernel
+        4. Source Code: Letting developers to find the kernel implemntation easily
+        5. Maintaince of Kernel Database is purely manual.
+        Per running the parser, it will generate an unknown_kernel.json if the kernel is not seen. 
+        To insert a db entry, one needs to copy the entry from unknown_kernel.json into kernels.json 
+        and add information
+        """
+        if not os.path.exists(db_path):
+            print(f"Database file {db_path} does not exist.")
+            db_data = {}
+        else:
+            # Load the database
+            with open(db_path, "r") as db_file:
+                db_data = json.load(db_file)
+
+            if isinstance(db_data, list):
+                db_data_kernel_name = {
+                    item["kernel_name"]: item
+                    for item in db_data
+                    if "kernel_name" in item
+                }
+                db_data_kernel_impl = {
+                    item["kernel_implementation"]: item
+                    for item in db_data
+                    if "kernel_implementation" in item
+                }
+
+        unknown_path = "/workloadsim/unknown_kernels.json"
+        unknown_list = []
+        if os.path.exists(unknown_path):
+            with open(unknown_path, "r") as f:
+                try:
+                    unknown_list = json.load(f)
+                except Exception:
+                    unknown_list = []
+
+        # Update individual info with the database
+        for i, (
+            name,
+            dims,
+            input_type,
+            roles,
+            desc,
+            duration,
+            op,
+            operation,
+            source_code,
+            call_stack,
+        ) in enumerate(self.individual_info):
+            # Extract op from call stack if not provided
+            # Example stack: cudaLaunchKernel <- aten::cumsum <- <built-in method cumsum of type object at 0x75145c4f6f40> <- ....
+            stack_parts = [p.strip() for p in call_stack.split("<-")]
+            if len(stack_parts) > 1:
+                kernel_impl = stack_parts[1]
+            else:
+                kernel_impl = stack_parts[0] if stack_parts else ""
+
+            db_entry = None
+            # Already recorded in the database per name
+            if name in db_data_kernel_name:
+                db_entry = db_data_kernel_name[name]
+            # Not in the database with same kernel name, but there's same kernel implementation recorded
+            # There're two special cases need to be excluded:
+            # 1. Triton kernel without specific implementaiton. Named as <built-in function launch>
+            # 2. Runtime launched kernel without specific implementation.
+            # Named as cuda/bindings/driver.pyx(33813): cuLaunchKernelEx
+            elif (
+                kernel_impl in db_data_kernel_impl
+                and "<built-in function launch>" not in kernel_impl
+                and "cuLaunchKernelEx" not in kernel_impl
+            ):
+                db_entry = db_data_kernel_impl[kernel_impl]
+
+            if db_entry:
+                valid_params = [p for p in db_entry.get("params", [])]
+
+                op_mapping = db_entry.get("op_mapping", "")
+                # Get the descriptions for the inputs
+                kernel_param_desc = [
+                    p.get("description", "") for p in valid_params
+                ]
+                # Get input/output type from database, under params - role
+                roles = [p.get("role", "") for p in valid_params]
+                # Point to the source code of the kernel
+                source_code = db_entry.get("source_code", "")
+                # Get the mathmetical operation from database
+                operation = db_entry.get("operation", "")
+
+                # Special Handling for gemm kernels where bias could not included
+                if (
+                    op_mapping == "matmul"
+                    and isinstance(dims, (list, tuple))
+                    and len(dims) == 2
+                ):
+                    # If dims is a 2D list, it means it's a matrix multiplication without bias
+                    roles = ["input", "input"]
+                    kernel_param_desc = ["A", "B"]
+                    operation = "C = A @ B"
+
+                self.individual_info[i] = (
+                    name,
+                    dims,
+                    input_type,
+                    roles,
+                    kernel_param_desc,
+                    duration,
+                    op_mapping,
+                    operation,
+                    source_code,
+                    call_stack,
+                )
+            # Not in the database, need to add to unknown kernels
+            else:
+                # Keep same parameters as before
+                dims_list = dims if isinstance(dims, (list, tuple)) else [dims]
+                types_list = (
+                    input_type
+                    if isinstance(input_type, (list, tuple))
+                    else [input_type]
+                )
+                params = []
+                for idx in range(max(len(dims_list), len(types_list))):
+                    dim = dims_list[idx] if idx < len(dims_list) else []
+                    dtype = types_list[idx] if idx < len(types_list) else ""
+                    params.append(
+                        {
+                            "id": idx,
+                            "role": "unknown",
+                            "example_dim": dim,
+                            "example_dtype": dtype,
+                            "description": "",
+                        }
+                    )
+                unknown_kernel = {
+                    "kernel_name": name,
+                    "kernel_implementation": kernel_impl,
+                    "op_mapping": "",
+                    "operation": "",
+                    "source_code": "",
+                    "call_stack": call_stack,
+                    "params": params,
+                }
+                # Update the individual info with the unknown kernel
+                self.individual_info[i] = (
+                    name,
+                    dims,
+                    input_type,
+                    "",
+                    "",
+                    duration,
+                    "",
+                    "",
+                    "",
+                    call_stack,
+                )
+                # Avoid duplicates
+                if not any(
+                    item.get("kernel_name") == name for item in unknown_list
+                ):
+                    unknown_list.append(unknown_kernel)
+                    with open(unknown_path, "w") as f:
+                        json.dump(unknown_list, f, ensure_ascii=False, indent=2)
+
+        with open(unknown_path, "w") as f:
+            json.dump(unknown_list, f, ensure_ascii=False, indent=2)
 
     def get_aggregate_kernel_info(self) -> list[tuple]:
         """

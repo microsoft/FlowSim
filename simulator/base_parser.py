@@ -602,8 +602,8 @@ class BaseKernelInfoParser:
         3. operation: The mathematical operation of a kernel
         4. Source Code: Letting developers to find the kernel implemntation easily
         5. Maintaince of Kernel Database is purely manual.
-        Per running the parser, it will generate an unknown_kernel.json if the kernel is not seen. 
-        To insert a db entry, one needs to copy the entry from unknown_kernel.json into kernels.json 
+        Per running the parser, it will generate an unknown_kernel.json if the kernel is not seen.
+        To insert a db entry, one needs to copy the entry from unknown_kernel.json into kernels.json
         and add information
         """
         if not os.path.exists(db_path):

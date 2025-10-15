@@ -3,3 +3,4 @@
 *.egg-info
 tests/test-artifacts/
 unknown_kernels.json
+/artifacts

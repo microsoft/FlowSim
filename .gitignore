@@ -4,3 +4,5 @@
 tests/test-artifacts/
 unknown_kernels.json
 /artifacts
+/server_profile
+/server_simulate

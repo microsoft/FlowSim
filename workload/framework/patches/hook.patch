@@ -1,0 +1,634 @@
+diff --git a/python/sglang/srt/tracing/hook.py b/python/sglang/srt/tracing/hook.py
+new file mode 100644
+index 000000000..dab218a09
+--- /dev/null
++++ b/python/sglang/srt/tracing/hook.py
+@@ -0,0 +1,177 @@
++from __future__ import annotations
++
++"""PyTorch profiler helpers.
++
++This module attaches tensor metadata (full shape + dtype) to `torch.profiler`
++labels. It is intentionally always-on:
++
++- No environment-variable switches
++- No truncation/limits for tensor metadata
++
++Label format:
++    <base>|<arg_name>[<dim0>x<dim1>x...:<dtype>],...
++"""
++
++import asyncio
++import functools
++import importlib
++import inspect
++from typing import List, Optional, Tuple
++
++import torch
++
++
++def _summarize_tensor(t: torch.Tensor) -> str:
++    """Summarize a tensor as '<shape>:<dtype>' using the full shape."""
++    shape = "x".join(map(str, t.shape))
++    dtype = str(t.dtype).replace("torch.", "")
++    return f"{shape}:{dtype}"
++
++
++def _build_label(base: str, tensors, names) -> str:
++    """Build a profiler label from a base name and tensor arguments."""
++    if not tensors:
++        return base
++    segs: List[str] = []
++    for t, n in zip(tensors, names):
++        if torch.is_tensor(t):
++            segs.append(f"{n}[{_summarize_tensor(t)}]")
++    return base if not segs else f"{base}|{','.join(segs)}"
++
++
++def profiled(name: Optional[str] = None, tensor_arg_names: Optional[List[str]] = None):
++    """
++    Decorator for sync/async functions.
++
++    If `tensor_arg_names` is provided, only those argument names (and in that
++    order) will be included in the label. Otherwise, tensor arguments are
++    inferred from positional arguments (using the function signature) and
++    keyword arguments.
++    """
++    def deco(fn):
++        base = name or fn.__qualname__
++        sig = inspect.signature(fn)
++        param_names = list(sig.parameters.keys())
++
++        def _collect(args, kwargs) -> Tuple[List[torch.Tensor], List[str]]:
++            tensors: List[torch.Tensor] = []
++            order_names: List[str] = []
++            # Positional args: map to parameter names when possible.
++            for i, v in enumerate(args):
++                pname = param_names[i] if i < len(param_names) else f"arg{i}"
++                if torch.is_tensor(v):
++                    tensors.append(v)
++                    order_names.append(pname)
++            # Keyword args.
++            for pname, v in kwargs.items():
++                if torch.is_tensor(v):
++                    tensors.append(v)
++                    order_names.append(pname)
++            if tensor_arg_names:
++                # Select only the requested argument names, in order.
++                filtered_tensors: List[torch.Tensor] = []
++                filtered_names: List[str] = []
++                for n in tensor_arg_names:
++                    if n in order_names:
++                        idx = order_names.index(n)
++                        filtered_tensors.append(tensors[idx])
++                        filtered_names.append(n)
++                if filtered_tensors:
++                    return filtered_tensors, filtered_names
++            return tensors, order_names
++
++        @functools.wraps(fn)
++        def sync_wrapper(*args, **kwargs):
++            tensors, names_used = _collect(args, kwargs)
++            label = _build_label(base, tensors, names_used)
++            # Always create a profiler range (no runtime switches).
++            with torch.profiler.record_function(label):
++                return fn(*args, **kwargs)
++
++        @functools.wraps(fn)
++        async def async_wrapper(*args, **kwargs):
++            tensors, names_used = _collect(args, kwargs)
++            label = _build_label(base, tensors, names_used)
++            with torch.profiler.record_function(label):
++                return await fn(*args, **kwargs)
++
++        return async_wrapper if asyncio.iscoroutinefunction(fn) else sync_wrapper
++
++    return deco
++
++
++def profile_stream(base, tensor_args=None, tensor_arg_names=None):
++    """
++    Decorator for async generators: keeps a single profiler range covering
++    the whole iteration.
++
++    `tensor_args` selects which inputs to include in the label:
++    - int: positional argument index
++    - str: keyword argument name
++
++    `tensor_arg_names` is accepted for API compatibility but not used.
++    """
++    def deco(gen_fn):
++        @functools.wraps(gen_fn)
++        async def wrapper(*args, **kwargs):
++            tensors = []
++            names = []
++            if tensor_args:
++                for idx, n in enumerate(tensor_args):
++                    if isinstance(n, int) and n < len(args) and torch.is_tensor(args[n]):
++                        tensors.append(args[n])
++                        names.append(f"arg{n}")
++                    elif isinstance(n, str) and n in kwargs and torch.is_tensor(kwargs[n]):
++                        tensors.append(kwargs[n])
++                        names.append(n)
++            label = _build_label(base, tensors, names)
++            with torch.profiler.record_function(label):
++                async for item in gen_fn(*args, **kwargs):
++                    yield item
++        return wrapper
++    return deco
++
++
++# Registry-based auto patching.
++_REGISTRY: List[Tuple[str, str, Optional[str], Optional[List[str]]]] = []
++
++
++def register(module_path: str, attr_name: str, base_name: Optional[str] = None,
++             tensor_arg_names: Optional[List[str]] = None):
++    """Register a function to be wrapped later by `apply_auto_profile()`."""
++    _REGISTRY.append((module_path, attr_name, base_name, tensor_arg_names))
++
++
++def apply_auto_profile():
++    """Apply wrapping for all registered callables.
++
++    Best-effort: failures are ignored to avoid breaking import-time behavior.
++    """
++    wrapped_count = 0
++    for mod_path, attr, base, tnames in _REGISTRY:
++        try:
++            mod = importlib.import_module(mod_path)
++            # Support dotted attribute paths (e.g., "Cls.method") in addition to
++            # module-level functions.
++            parts = attr.split(".")
++            parent = mod
++            for p in parts[:-1]:
++                parent = getattr(parent, p, None)
++                if parent is None:
++                    break
++            if parent is None:
++                continue
++
++            leaf = parts[-1]
++            fn = getattr(parent, leaf, None)
++            if fn is None or not callable(fn):
++                continue
++            if getattr(fn, "_sglang_profile_wrapped", False):
++                continue
++
++            wrapped = profiled(base or fn.__qualname__, tensor_arg_names=tnames)(fn)
++            wrapped._sglang_profile_wrapped = True  # type: ignore[attr-defined]
++            setattr(parent, leaf, wrapped)
++            wrapped_count += 1
++        except Exception:
++            continue
+\ No newline at end of file
+diff --git a/python/sglang/srt/tracing/hook_register.py b/python/sglang/srt/tracing/hook_register.py
+new file mode 100644
+index 000000000..d5993bf85
+--- /dev/null
++++ b/python/sglang/srt/tracing/hook_register.py
+@@ -0,0 +1,85 @@
++
++from sglang.srt.tracing.hook import register
++
++
++def register_kernels_for_profiling() -> None:
++	"""Register kernel launchers for automatic profiling.
++
++	These entries correspond to kernel calls that were previously wrapped with
++	`torch.profiler.record_function` (e.g., in a patch). We now centralize them
++	here and let the tracing hook apply consistent labels.
++	"""
++
++	# FlashInfer KV index building (decode / prefill).
++	# Note: keep the Triton JIT function unchanged. We wrap the Python launcher
++	# so we can insert `record_function` next to the kernel launch without
++	# perturbing the JIT signature/type specialization.
++	register(
++		"sglang.srt.layers.attention.utils",
++		"launch_create_flashinfer_kv_indices_triton",
++		base_name="attn.create_flashinfer_kv_indices_decode",
++	)
++
++	# Mem cache: write_req_to_token_pool_triton
++	register(
++		"sglang.srt.mem_cache.common",
++		"launch_write_req_to_token_pool_triton",
++		base_name="mem_cache.write_req_to_token_pool_triton",
++	)
++
++	# Forward batch info: compute_position_triton
++	register(
++		"sglang.srt.model_executor.forward_batch_info",
++		"launch_compute_position_triton",
++		base_name="fwd.compute_position_triton",
++	)
++
++	# MLA KV buffer setup kernel
++	register(
++		"sglang.srt.mem_cache.utils",
++		"launch_set_mla_kv_buffer_triton",
++		base_name="mem_cache.set_mla_kv_buffer_triton",
++	)
++
++	# MLA KV buffer: get_mla_kv_buffer_triton
++	register(
++		"sglang.srt.mem_cache.utils",
++		"launch_get_mla_kv_buffer_triton",
++		base_name="mem_cache.get_mla_kv_buffer_triton",
++	)
++
++	# DP attention memcpy kernel
++	register(
++		"sglang.srt.layers.dp_attention",
++		"launch_memcpy_triton",
++		base_name="dp.memcpy_triton",
++	)
++
++	# FlashInfer MLA decode cooperative kernel
++	register(
++		"sglang.srt.layers.attention.flashinfer_mla_backend",
++		"launch_flashinfer_mla_decode",
++		base_name="mla.decode",
++	)
++
++	# FlashInfer ragged prefill happens inside sglang's backend; wrap sglang only.
++	register(
++		"sglang.srt.layers.attention.flashinfer_mla_backend",
++		"FlashInferMLAAttnBackend.forward_extend",
++		base_name="mla.prefill",
++	)
++
++	# ForwardBatch: one-shot kv indices builder
++	register(
++		"sglang.srt.model_executor.forward_batch_info",
++		"launch_fetch_mha_one_shot_kv_indices",
++		base_name="fwd.fetch_mha_one_shot_kv_indices",
++	)
++
++
++	# DeepSeekV2: concat+cast MHA K launcher
++	register(
++		"sglang.srt.layers.attention.utils",
++		"concat_and_cast_mha_k_triton",
++		base_name="attn.concat_and_cast_mha_k_triton",
++	)
+\ No newline at end of file
+
+diff --git a/python/sglang/srt/mem_cache/common.py b/python/sglang/srt/mem_cache/common.py
+index d50e7949f..72f3156f3 100644
+--- a/python/sglang/srt/mem_cache/common.py
++++ b/python/sglang/srt/mem_cache/common.py
+@@ -72,6 +72,33 @@ def write_req_to_token_pool_triton(
+         )
+ 
+ 
++def launch_write_req_to_token_pool_triton(
++    out_cache_loc: torch.Tensor,
++    req_pool_indices_tensor: torch.Tensor,
++    prefix_lens_tensor: torch.Tensor,
++    seq_lens_tensor: torch.Tensor,
++    extend_lens_tensor: torch.Tensor,
++    prefix_tensors: list[torch.Tensor],
++    req_to_token_pool: ReqToTokenPool,
++):
++    prefix_pointers = torch.tensor(
++        [t.data_ptr() for t in prefix_tensors],
++        device=req_to_token_pool.device,
++        dtype=torch.uint64,
++    )
++    # TODO: some tensors can be reused for ForwardBatchInfo (e.g., extend_lens, cumsum_start)
++    write_req_to_token_pool_triton[(req_pool_indices_tensor.shape[0],)](
++        req_to_token_pool.req_to_token,
++        req_pool_indices_tensor,
++        prefix_pointers,
++        prefix_lens_tensor,
++        seq_lens_tensor,
++        extend_lens_tensor,
++        out_cache_loc,
++        req_to_token_pool.req_to_token.shape[1],
++    )
++
++
+ def write_cache_indices(
+     out_cache_loc: torch.Tensor,
+     req_pool_indices_tensor: torch.Tensor,
+@@ -86,21 +113,14 @@ def write_cache_indices(
+     req_to_token_pool: ReqToTokenPool,
+ ):
+     if support_triton(get_global_server_args().attention_backend):
+-        prefix_pointers = torch.tensor(
+-            [t.data_ptr() for t in prefix_tensors],
+-            device=req_to_token_pool.device,
+-            dtype=torch.uint64,
+-        )
+-        # TODO: some tensors can be reused for ForwardBatchInfo (e.g., extend_lens, cumsum_start)
+-        write_req_to_token_pool_triton[(req_pool_indices_tensor.shape[0],)](
+-            req_to_token_pool.req_to_token,
++        launch_write_req_to_token_pool_triton(
++            out_cache_loc,
+             req_pool_indices_tensor,
+-            prefix_pointers,
+             prefix_lens_tensor,
+             seq_lens_tensor,
+             extend_lens_tensor,
+-            out_cache_loc,
+-            req_to_token_pool.req_to_token.shape[1],
++            prefix_tensors,
++            req_to_token_pool,
+         )
+     else:
+         pt = 0
+diff --git a/python/sglang/srt/mem_cache/utils.py b/python/sglang/srt/mem_cache/utils.py
+index 03f5ec0a8..2bb3aadca 100644
+--- a/python/sglang/srt/mem_cache/utils.py
++++ b/python/sglang/srt/mem_cache/utils.py
+@@ -57,7 +57,7 @@ def set_mla_kv_buffer_kernel(
+     tl.store(dst_ptr, src, mask=mask)
+ 
+ 
+-def set_mla_kv_buffer_triton(
++def launch_set_mla_kv_buffer_triton(
+     kv_buffer: torch.Tensor,
+     loc: torch.Tensor,
+     cache_k_nope: torch.Tensor,
+@@ -84,6 +84,20 @@ def set_mla_kv_buffer_triton(
+     )
+ 
+ 
++def set_mla_kv_buffer_triton(
++    kv_buffer: torch.Tensor,
++    loc: torch.Tensor,
++    cache_k_nope: torch.Tensor,
++    cache_k_rope: torch.Tensor,
++):
++    launch_set_mla_kv_buffer_triton(
++        kv_buffer,
++        loc,
++        cache_k_nope,
++        cache_k_rope,
++    )
++
++
+ @triton.jit
+ def set_mla_kv_scale_buffer_kernel(
+     kv_buffer_ptr,
+@@ -185,7 +199,7 @@ def get_mla_kv_buffer_kernel(
+     )
+ 
+ 
+-def get_mla_kv_buffer_triton(
++def launch_get_mla_kv_buffer_triton(
+     kv_buffer: torch.Tensor,
+     loc: torch.Tensor,
+     cache_k_nope: torch.Tensor,
+@@ -208,3 +222,17 @@ def get_mla_kv_buffer_triton(
+         nope_dim,
+         rope_dim,
+     )
++
++
++def get_mla_kv_buffer_triton(
++    kv_buffer: torch.Tensor,
++    loc: torch.Tensor,
++    cache_k_nope: torch.Tensor,
++    cache_k_rope: torch.Tensor,
++):
++    launch_get_mla_kv_buffer_triton(
++        kv_buffer,
++        loc,
++        cache_k_nope,
++        cache_k_rope,
++    )
+diff --git a/python/sglang/launch_server.py b/python/sglang/launch_server.py
+index 9e3e82a78..ba03fe566 100644
+--- a/python/sglang/launch_server.py
++++ b/python/sglang/launch_server.py
+@@ -4,10 +4,20 @@ import asyncio
+ import os
+ import sys
+ 
++from sglang.srt.tracing.hook import apply_auto_profile
++from sglang.srt.tracing.hook_register import register_kernels_for_profiling
++
++# Lazily register and apply kernel profiling hooks.
++# This keeps import cost minimal and ensures all sglang modules
++# are available when we patch their symbols.
++env = os.environ.copy()
++if env["SGLANG_PROFILE_KERNELS"]=="1":
++    register_kernels_for_profiling()
++    apply_auto_profile()
++
+ from sglang.srt.server_args import prepare_server_args
+ from sglang.srt.utils import kill_process_tree
+ 
+-
+ def run_server(server_args):
+     """Run the server based on server_args.grpc_mode."""
+     if server_args.grpc_mode:
+diff --git a/python/sglang/srt/layers/attention/flashinfer_backend.py b/python/sglang/srt/layers/attention/flashinfer_backend.py
+index e776ebac5..25346fab7 100644
+--- a/python/sglang/srt/layers/attention/flashinfer_backend.py
++++ b/python/sglang/srt/layers/attention/flashinfer_backend.py
+@@ -18,7 +18,10 @@ import torch
+ 
+ from sglang.srt.environ import envs
+ from sglang.srt.layers.attention.base_attn_backend import AttentionBackend
+-from sglang.srt.layers.attention.utils import create_flashinfer_kv_indices_triton
++from sglang.srt.layers.attention.utils import (
++    create_flashinfer_kv_indices_triton,
++    launch_create_flashinfer_kv_indices_triton,
++)
+ from sglang.srt.layers.dp_attention import get_attention_tp_size
+ from sglang.srt.layers.radix_attention import AttentionType
+ from sglang.srt.mem_cache.allocator import SWATokenToKVPoolAllocator
+@@ -1023,14 +1026,13 @@ class FlashInferIndicesUpdaterDecode:
+                     paged_kernel_lens_sum, dtype=torch.int32, device="cuda"
+                 )
+ 
+-            create_flashinfer_kv_indices_triton[(bs,)](
++            launch_create_flashinfer_kv_indices_triton(
+                 self.req_to_token,
+                 req_pool_indices,
+                 paged_kernel_lens,
+                 kv_indptr,
+                 kv_start_idx,
+                 kv_indices,
+-                self.req_to_token.shape[1],
+             )
+         else:
+             kv_indptr, kv_indices = spec_info.kv_indptr, spec_info.kv_indices
+diff --git a/python/sglang/srt/layers/attention/flashinfer_mla_backend.py b/python/sglang/srt/layers/attention/flashinfer_mla_backend.py
+index 7a4376379..eddc7d43e 100644
+--- a/python/sglang/srt/layers/attention/flashinfer_mla_backend.py
++++ b/python/sglang/srt/layers/attention/flashinfer_mla_backend.py
+@@ -20,6 +20,9 @@ from sglang.srt.layers.attention.base_attn_backend import AttentionBackend
+ from sglang.srt.layers.attention.flashinfer_backend import (
+     create_flashinfer_kv_indices_triton,
+ )
++from sglang.srt.layers.attention.utils import (
++    launch_create_flashinfer_kv_indices_triton,
++)
+ from sglang.srt.layers.dp_attention import get_attention_tp_size
+ from sglang.srt.model_executor.forward_batch_info import ForwardBatch, ForwardMode
+ from sglang.srt.server_args import get_global_server_args
+@@ -639,7 +642,8 @@ class FlashInferMLAAttnBackend(AttentionBackend):
+ 
+         o = q_nope.new_empty(q_nope.shape)
+         # Direct call to run without the wrapper
+-        o = decode_wrapper.run(
++        o = launch_flashinfer_mla_decode(
++            decode_wrapper,
+             q_nope,
+             q_rope,
+             k_buffer[:, :, : layer.v_head_dim],
+@@ -650,6 +654,23 @@ class FlashInferMLAAttnBackend(AttentionBackend):
+         return o.view(-1, layer.tp_q_head_num * layer.v_head_dim)
+ 
+ 
++def launch_flashinfer_mla_decode(
++    decode_wrapper,
++    q_nope: torch.Tensor,
++    q_rope: torch.Tensor,
++    k_nope: torch.Tensor,
++    k_rope: torch.Tensor,
++    out: torch.Tensor,
++):
++    return decode_wrapper.run(
++        q_nope,
++        q_rope,
++        k_nope,
++        k_rope,
++        out=out,
++    )
++
++
+ class FlashInferMLAIndicesUpdaterDecode:
+     def __init__(self, model_runner: ModelRunner, attn_backend: AttentionBackend):
+         # Parse Constants
+@@ -837,14 +858,13 @@ class FlashInferMLAIndicesUpdaterPrefill:
+                 dtype=torch.int32,
+                 device=req_pool_indices.device,
+             )
+-            create_flashinfer_kv_indices_triton[(bs,)](
++            launch_create_flashinfer_kv_indices_triton(
+                 self.req_to_token,
+                 req_pool_indices,
+                 paged_kernel_lens,
+                 kv_indptr,
+                 None,
+                 kv_indices,
+-                self.req_to_token.shape[1],
+             )
+             qo_indptr[1 : bs + 1] = torch.cumsum(seq_lens - prefix_lens, dim=0)
+             qo_indptr = qo_indptr[: bs + 1]
+diff --git a/python/sglang/srt/layers/attention/utils.py b/python/sglang/srt/layers/attention/utils.py
+index a8d8cc4b4..caf1aaa94 100644
+--- a/python/sglang/srt/layers/attention/utils.py
++++ b/python/sglang/srt/layers/attention/utils.py
+@@ -45,6 +45,31 @@ def create_flashinfer_kv_indices_triton(
+         tl.store(kv_indices_ptr + kv_indices_offset + offset, data, mask=mask)
+ 
+ 
++def launch_create_flashinfer_kv_indices_triton(
++    req_to_token: torch.Tensor,
++    req_pool_indices: torch.Tensor,
++    paged_kernel_lens: torch.Tensor,
++    kv_indptr: torch.Tensor,
++    kv_start_idx: torch.Tensor | None,
++    kv_indices: torch.Tensor,
++):
++    """Python launcher for create_flashinfer_kv_indices_triton Triton kernel.
++
++    This keeps the Triton JIT function untouched while giving us a stable
++    hookable entry point that sits right next to the kernel launch.
++    """
++    bs = req_pool_indices.shape[0]
++    create_flashinfer_kv_indices_triton[(bs,)](
++        req_to_token,
++        req_pool_indices,
++        paged_kernel_lens,
++        kv_indptr,
++        kv_start_idx,
++        kv_indices,
++        req_to_token.shape[1],
++    )
++
++
+ def get_num_page_per_block_flashmla(page_size: int = 64) -> int:
+     num_page_per_block = _FLASHMLA_CREATE_KV_BLOCK_SIZE // page_size
+     return num_page_per_block
+diff --git a/python/sglang/srt/model_executor/forward_batch_info.py b/python/sglang/srt/model_executor/forward_batch_info.py
+index 4f843726f..0644cf4ed 100644
+--- a/python/sglang/srt/model_executor/forward_batch_info.py
++++ b/python/sglang/srt/model_executor/forward_batch_info.py
+@@ -961,19 +961,37 @@ class ForwardBatch:
+             device=self.req_pool_indices.device,
+         )
+         kv_indptr[1:] = torch.cumsum(self.seq_lens, dim=0)
+-        create_flashinfer_kv_indices_triton[(self.batch_size,)](
++        launch_fetch_mha_one_shot_kv_indices(
++            batch_size,
+             self.req_to_token_pool.req_to_token,
+             self.req_pool_indices,
+             self.seq_lens,
+             kv_indptr,
+-            None,
+             kv_indices,
+-            self.req_to_token_pool.req_to_token.shape[1],
+         )
+         self.mha_one_shot_kv_indices = kv_indices
+         return kv_indices
+ 
+ 
++def launch_fetch_mha_one_shot_kv_indices(
++    batch_size: int,
++    req_to_token: torch.Tensor,
++    req_pool_indices: torch.Tensor,
++    seq_lens: torch.Tensor,
++    kv_indptr: torch.Tensor,
++    kv_indices: torch.Tensor,
++):
++    create_flashinfer_kv_indices_triton[(batch_size,)](
++        req_to_token,
++        req_pool_indices,
++        seq_lens,
++        kv_indptr,
++        None,
++        kv_indices,
++        req_to_token.shape[1],
++    )
++
++
+ def enable_num_token_non_padded(server_args):
+     return get_moe_expert_parallel_world_size() > 1
+ 
+@@ -1015,7 +1033,7 @@ def compute_position(
+     extend_seq_lens_sum: int,
+ ):
+     if support_triton(attn_backend):
+-        positions, extend_start_loc = compute_position_triton(
++        positions, extend_start_loc = launch_compute_position_triton(
+             extend_prefix_lens,
+             extend_seq_lens,
+             extend_seq_lens_sum,
+@@ -1053,6 +1071,18 @@ def compute_position_triton(
+     return positions, extend_start_loc
+ 
+ 
++def launch_compute_position_triton(
++    extend_prefix_lens: torch.Tensor,
++    extend_seq_lens: torch.Tensor,
++    extend_seq_lens_sum: int,
++):
++    return compute_position_triton(
++        extend_prefix_lens,
++        extend_seq_lens,
++        extend_seq_lens_sum,
++    )
++
++
+ @triton.jit
+ def compute_position_kernel(
+     positions,
+

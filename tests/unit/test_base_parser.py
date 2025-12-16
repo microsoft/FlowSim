@@ -55,3 +55,14 @@ def test_base_parser_with_real_profile(real_trace_file):
     summary_text = "\n".join(summary_lines) + "\n"
 
     _write_artifact(artifact_dir, f"{base}.summary.txt", summary_text)
+
+
+def test_parse_annotation_name_new_format():
+    dims, dtypes, names = (
+        BaseKernelInfoParser._parse_dims_and_types_from_annotation_name(
+            "moe.fused|hidden_states[4x16:float32],router_logits[4x8:float32]"
+        )
+    )
+    assert dims == [[4, 16], [4, 8]]
+    assert dtypes == ["float32", "float32"]
+    assert names == ["hidden_states", "router_logits"]

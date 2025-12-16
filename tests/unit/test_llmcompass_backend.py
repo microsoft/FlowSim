@@ -13,7 +13,7 @@ from backend.interface import (
     submit_task,
     get_result,
     wait_for_health,
-    run_init_server
+    run_init_server,
 )
 
 
@@ -84,7 +84,9 @@ def test_post_parsed_kernels_to_backend():
         assert isinstance(body, dict)
         task_id = body.get("task_id")
         assert task_id
-        submitted.append({"task_id": task_id, "out_file": out_file, "payload": payload})
+        submitted.append(
+            {"task_id": task_id, "out_file": out_file, "payload": payload}
+        )
 
         # avoid hammering the server
         time.sleep(0.02)
@@ -98,7 +100,9 @@ def test_post_parsed_kernels_to_backend():
                 res = get_result(api_url, task_id, timeout=10, session=session)
 
                 # write poll artifact for this task
-                with open(ARTIFACT_DIR / f"task_{task_id}_poll.json", "w") as pf:
+                with open(
+                    ARTIFACT_DIR / f"task_{task_id}_poll.json", "w"
+                ) as pf:
                     json.dump(res, pf, indent=2)
 
                 if "error" in res:
@@ -107,7 +111,9 @@ def test_post_parsed_kernels_to_backend():
 
                 if res.get("status") == "done":
                     result = res.get("result")
-                    assert isinstance(result, dict), f"done but no result for {task_id}: {res}"
+                    assert isinstance(
+                        result, dict
+                    ), f"done but no result for {task_id}: {res}"
                     assert result.get("status") in ("success", "failed")
                     pending.pop(task_id, None)
 
@@ -115,4 +121,6 @@ def test_post_parsed_kernels_to_backend():
                 time.sleep(0.5)
 
         # after polling loop, ensure no pending tasks remain
-        assert not pending, f"some tasks did not reach terminal state: {list(pending.keys())}"
+        assert (
+            not pending
+        ), f"some tasks did not reach terminal state: {list(pending.keys())}"

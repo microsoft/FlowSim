@@ -1721,34 +1721,52 @@
   {
     "kernel_name": "set_mla_kv_buffer_kernel",
     "kernel_implementation": "<built-in function launch>",
-    "op_mapping": "TBD",
+    "op_mapping": "",
     "operation": "",
     "source_code": "",
-    "call_stack": "cuLaunchKernel <- <built-in function launch> <- triton/backends/nvidia/driver.py(443): __call__ <- triton/runtime/jit.py(563): run <- triton/runtime/jit.py(330): <lambda> <- sglang/srt/mem_cache/memory_pool.py(484): set_mla_kv_buffer_triton <- sglang/srt/mem_cache/memory_pool.py(612): set_mla_kv_buffer <- sglang/srt/layers/attention/flashinfer_mla_backend.py(435): forward_decode <- sglang/srt/layers/attention/base_attn_backend.py(57): forward <- sglang/srt/layers/radix_attention.py(83): forward <- torch/nn/modules/module.py(1743): _call_impl <- nn.Module: RadixAttention_2 <- sglang/srt/models/deepseek_v2.py(982): forward_absorb_core <- sglang/srt/models/deepseek_v2.py(837): forward_core <- sglang/srt/models/deepseek_v2.py(787): forward <- torch/nn/modules/module.py(1743): _call_impl <- nn.Module: DeepseekV2AttentionMLA_0 <- sglang/srt/models/deepseek_v2.py(1442): forward <- torch/nn/modules/module.py(1743): _call_impl <- nn.Module: DeepseekV2DecoderLayer_0 <- sglang/srt/models/deepseek_v2.py(1583): forward <- torch/nn/modules/module.py(1743): _call_impl <- nn.Module: DeepseekV2Model_0 <- sglang/srt/models/deepseek_v2.py(1716): forward <- torch/utils/_contextlib.py(113): decorate_context <- sglang/srt/model_executor/model_runner.py(1139): forward_decode <- sglang/srt/model_executor/model_runner.py(1208): _forward_raw <- sglang/srt/model_executor/model_runner.py(1187): forward <- sglang/bench_one_batch.py(255): decode <- torch/utils/_contextlib.py(113): decorate_context <- sglang/bench_one_batch.py(389): latency_test_run_once <- sglang/bench_one_batch.py(499): latency_test <- sglang/bench_one_batch.py(548): main <- sglang/bench_one_batch.py(589): <module> <- runpy.py(86): _run_code <- runpy.py(196): _run_module_as_main",
+    "call_stack": "cuLaunchKernelEx <- <built-in function launch> <- triton/backends/nvidia/driver.py(701): __call__ <- triton/runtime/jit.py(547): run <- triton/runtime/jit.py(390): <lambda> <- sglang/srt/mem_cache/utils.py(60): launch_set_mla_kv_buffer_triton <- mem_cache.set_mla_kv_buffer_triton|kv_buffer[56116483x1x576:bfloat16],loc[8192:int64],cache_k_nope[8192x1x512:bfloat16],cache_k_rope[8192x1x64:bfloat16] <- <built-in method _record_function_enter_new of PyCapsule object at 0x76eedaafe7c0> <- torch/_ops.py(1232): __call__ <- torch/autograd/profiler.py(775): __enter__ <- sglang/srt/tracing/hook.py(83): sync_wrapper <- sglang/srt/mem_cache/utils.py(87): set_mla_kv_buffer_triton <- sglang/srt/mem_cache/memory_pool.py(1456): set_mla_kv_buffer <- sglang/srt/models/deepseek_v2.py(2582): _set_mla_kv_buffer <- sglang/srt/models/deepseek_v2.py(1613): forward_normal_prepare <- sglang/srt/models/deepseek_v2.py(2558): forward_normal_one_shot_prepare <- sglang/srt/models/deepseek_v2.py(1512): forward_prepare <- sglang/srt/models/deepseek_v2.py(1497): forward <- torch/nn/modules/module.py(1777): _call_impl <- nn.Module: DeepseekV2AttentionMLA_0 <- sglang/srt/models/deepseek_v2.py(2771): forward <- torch/nn/modules/module.py(1777): _call_impl <- nn.Module: DeepseekV2DecoderLayer_0 <- sglang/srt/models/deepseek_v2.py(3013): forward <- torch/nn/modules/module.py(1777): _call_impl <- nn.Module: DeepseekV2Model_0 <- sglang/srt/models/deepseek_v2.py(3205): forward <- torch/utils/_contextlib.py(117): decorate_context <- sglang/srt/model_executor/model_runner.py(2071): forward_extend <- sglang/srt/model_executor/model_runner.py(2160): _forward_raw <- sglang/srt/model_executor/model_runner.py(2133): forward <- sglang/srt/managers/tp_worker.py(343): forward_batch_generation <- sglang/srt/managers/scheduler.py(1949): run_batch <- sglang/srt/managers/scheduler.py(984): event_loop_overlap <- torch/utils/_contextlib.py(120): decorate_context <- <function run_scheduler_process at 0x76eb019a7640> <- sglang/srt/managers/scheduler.py(2849): run_scheduler_process <- multiprocessing/process.py(108): run <- multiprocessing/process.py(314): _bootstrap <- <function spawn_main at 0x76f15e643520> <- multiprocessing/spawn.py(129): _main <- <function spawn_main at 0x76f15e643520> <- multiprocessing/spawn.py(116): spawn_main <- <string>(1): <module> <- <function _recv_msg at 0x76eb0d43bbe0>",
     "params": [
       {
         "id": 0,
-        "role": "input",
-        "example_dim": "N/A",
-        "example_dtype": "N/A",
-        "description": ""
-      }
-    ]
-  },
-  {
-    "kernel_name": "mock_reduce_scatter",
-    "kernel_implementation": "<built-in function launch>",
-    "op_mapping": "TBD",
-    "operation": "reduce scatter",
-    "source_code": "",
-    "call_stack": "cuLaunchKernel <- <built-in function launch> <- triton/backends/nvidia/driver.py(443): __call__ <- triton/runtime/jit.py(563): run <- triton/runtime/jit.py(330): <lambda> <- sglang/mock_dist.py(118): reduce_scatter <- torch/distributed/distributed_c10d.py(4118): reduce_scatter <- torch/distributed/c10d_logger.py(78): wrapper <- sglang/srt/distributed/parallel_state.py(463): reduce_scatter <- sglang/srt/layers/dp_attention.py(295): attn_tp_reduce_scatter <- sglang/srt/layers/communicator.py(386): _scatter_hidden_states_and_residual <- sglang/srt/layers/communicator.py(199): prepare_mlp <- sglang/srt/models/deepseek_v2.py(1442): forward <- torch/nn/modules/module.py(1743): _call_impl <- nn.Module: DeepseekV2DecoderLayer_1 <- sglang/srt/models/deepseek_v2.py(1583): forward <- torch/nn/modules/module.py(1743): _call_impl <- nn.Module: DeepseekV2Model_0 <- sglang/srt/models/deepseek_v2.py(1716): forward <- torch/utils/_contextlib.py(113): decorate_context <- sglang/srt/model_executor/model_runner.py(1151): forward_extend <- sglang/srt/model_executor/model_runner.py(1208): _forward_raw <- sglang/srt/model_executor/model_runner.py(1187): forward <- sglang/bench_one_batch.py(233): extend <- torch/utils/_contextlib.py(113): decorate_context <- sglang/bench_one_batch.py(389): latency_test_run_once <- sglang/bench_one_batch.py(499): latency_test <- sglang/bench_one_batch.py(548): main <- sglang/bench_one_batch.py(589): <module> <- runpy.py(86): _run_code <- runpy.py(196): _run_module_as_main",
-    "params": [
+        "role": "unknown",
+        "example_dim": [
+          56116483,
+          1,
+          576
+        ],
+        "example_dtype": "bfloat16",
+        "description": "kv_buffer"
+      },
       {
-        "id": 0,
-        "role": "input",
-        "example_dim": "N/A",
-        "example_dtype": "N/A",
-        "description": ""
+        "id": 1,
+        "role": "unknown",
+        "example_dim": [
+          8192
+        ],
+        "example_dtype": "int64",
+        "description": "loc"
+      },
+      {
+        "id": 2,
+        "role": "unknown",
+        "example_dim": [
+          8192,
+          1,
+          512
+        ],
+        "example_dtype": "bfloat16",
+        "description": "cache_k_nope"
+      },
+      {
+        "id": 3,
+        "role": "unknown",
+        "example_dim": [
+          8192,
+          1,
+          64
+        ],
+        "example_dtype": "bfloat16",
+        "description": "cache_k_rope"
       }
     ]
   },
@@ -1815,24 +1833,6 @@
     ]
   },
   {
-    "kernel_name": "mock_notify_dispatch",
-    "kernel_implementation": "<built-in function launch>",
-    "op_mapping": "TBD",
-    "operation": "",
-    "source_code": "",
-    "call_stack": "cuLaunchKernel <- <built-in function launch> <- triton/backends/nvidia/driver.py(443): __call__ <- triton/runtime/jit.py(563): run <- triton/runtime/jit.py(330): <lambda> <- sglang/mock_dist.py(422): fake_dispatch <- sglang/srt/layers/moe/ep_moe/token_dispatcher.py(300): _dispatch_core <- sglang/srt/layers/moe/ep_moe/token_dispatcher.py(241): dispatch_b <- sglang/srt/layers/moe/ep_moe/token_dispatcher.py(711): dispatch_b <- sglang/srt/layers/moe/ep_moe/token_dispatcher.py(691): dispatch <- sglang/srt/two_batch_overlap.py(624): _execute <- sglang/srt/two_batch_overlap.py(627): dispatch <- sglang/srt/models/deepseek_v2.py(347): forward_deepep <- sglang/srt/models/deepseek_v2.py(325): forward <- torch/nn/modules/module.py(1743): _call_impl <- nn.Module: DeepseekV2MoE_0 <- sglang/srt/models/deepseek_v2.py(1442): forward <- torch/nn/modules/module.py(1743): _call_impl <- nn.Module: DeepseekV2DecoderLayer_1 <- sglang/srt/models/deepseek_v2.py(1583): forward <- torch/nn/modules/module.py(1743): _call_impl <- nn.Module: DeepseekV2Model_0 <- sglang/srt/models/deepseek_v2.py(1716): forward <- torch/utils/_contextlib.py(113): decorate_context <- sglang/srt/model_executor/model_runner.py(1151): forward_extend <- sglang/srt/model_executor/model_runner.py(1208): _forward_raw <- sglang/srt/model_executor/model_runner.py(1187): forward <- sglang/bench_one_batch.py(233): extend <- torch/utils/_contextlib.py(113): decorate_context <- sglang/bench_one_batch.py(389): latency_test_run_once <- sglang/bench_one_batch.py(499): latency_test <- sglang/bench_one_batch.py(548): main <- sglang/bench_one_batch.py(589): <module> <- runpy.py(86): _run_code <- runpy.py(196): _run_module_as_main",
-    "params": []
-  },
-  {
-    "kernel_name": "mock_dispatch",
-    "kernel_implementation": "<built-in function launch>",
-    "op_mapping": "TBD",
-    "operation": "",
-    "source_code": "",
-    "call_stack": "cuLaunchKernel <- <built-in function launch> <- triton/backends/nvidia/driver.py(443): __call__ <- triton/runtime/jit.py(563): run <- triton/runtime/jit.py(330): <lambda> <- sglang/mock_dist.py(422): fake_dispatch <- sglang/srt/layers/moe/ep_moe/token_dispatcher.py(300): _dispatch_core <- sglang/srt/layers/moe/ep_moe/token_dispatcher.py(241): dispatch_b <- sglang/srt/layers/moe/ep_moe/token_dispatcher.py(711): dispatch_b <- sglang/srt/layers/moe/ep_moe/token_dispatcher.py(691): dispatch <- sglang/srt/two_batch_overlap.py(624): _execute <- sglang/srt/two_batch_overlap.py(627): dispatch <- sglang/srt/models/deepseek_v2.py(347): forward_deepep <- sglang/srt/models/deepseek_v2.py(325): forward <- torch/nn/modules/module.py(1743): _call_impl <- nn.Module: DeepseekV2MoE_0 <- sglang/srt/models/deepseek_v2.py(1442): forward <- torch/nn/modules/module.py(1743): _call_impl <- nn.Module: DeepseekV2DecoderLayer_1 <- sglang/srt/models/deepseek_v2.py(1583): forward <- torch/nn/modules/module.py(1743): _call_impl <- nn.Module: DeepseekV2Model_0 <- sglang/srt/models/deepseek_v2.py(1716): forward <- torch/utils/_contextlib.py(113): decorate_context <- sglang/srt/model_executor/model_runner.py(1151): forward_extend <- sglang/srt/model_executor/model_runner.py(1208): _forward_raw <- sglang/srt/model_executor/model_runner.py(1187): forward <- sglang/bench_one_batch.py(233): extend <- torch/utils/_contextlib.py(113): decorate_context <- sglang/bench_one_batch.py(389): latency_test_run_once <- sglang/bench_one_batch.py(499): latency_test <- sglang/bench_one_batch.py(548): main <- sglang/bench_one_batch.py(589): <module> <- runpy.py(86): _run_code <- runpy.py(196): _run_module_as_main",
-    "params": []
-  },
-  {
     "kernel_name": "_tma_align_input_scale_kernel",
     "kernel_implementation": "<built-in function launch>",
     "op_mapping": "TBD",
@@ -1866,24 +1866,6 @@
         "description": "input"
       }
     ]
-  },
-  {
-    "kernel_name": "mock_notify_combine",
-    "kernel_implementation": "<built-in function launch>",
-    "op_mapping": "TBD",
-    "operation": "",
-    "source_code": "",
-    "call_stack": "cuLaunchKernel <- <built-in function launch> <- triton/backends/nvidia/driver.py(443): __call__ <- triton/runtime/jit.py(563): run <- triton/runtime/jit.py(330): <lambda> <- sglang/mock_dist.py(516): fake_combine <- sglang/srt/layers/moe/ep_moe/token_dispatcher.py(448): _combine_core <- sglang/srt/layers/moe/ep_moe/token_dispatcher.py(441): combine_b <- sglang/srt/layers/moe/ep_moe/token_dispatcher.py(737): combine_b <- sglang/srt/layers/moe/ep_moe/token_dispatcher.py(717): combine <- sglang/srt/two_batch_overlap.py(624): _execute <- sglang/srt/two_batch_overlap.py(636): combine <- sglang/srt/models/deepseek_v2.py(347): forward_deepep <- sglang/srt/models/deepseek_v2.py(325): forward <- torch/nn/modules/module.py(1743): _call_impl <- nn.Module: DeepseekV2MoE_0 <- sglang/srt/models/deepseek_v2.py(1442): forward <- torch/nn/modules/module.py(1743): _call_impl <- nn.Module: DeepseekV2DecoderLayer_1 <- sglang/srt/models/deepseek_v2.py(1583): forward <- torch/nn/modules/module.py(1743): _call_impl <- nn.Module: DeepseekV2Model_0 <- sglang/srt/models/deepseek_v2.py(1716): forward <- torch/utils/_contextlib.py(113): decorate_context <- sglang/srt/model_executor/model_runner.py(1151): forward_extend <- sglang/srt/model_executor/model_runner.py(1208): _forward_raw <- sglang/srt/model_executor/model_runner.py(1187): forward <- sglang/bench_one_batch.py(233): extend <- torch/utils/_contextlib.py(113): decorate_context <- sglang/bench_one_batch.py(389): latency_test_run_once <- sglang/bench_one_batch.py(499): latency_test <- sglang/bench_one_batch.py(548): main <- sglang/bench_one_batch.py(589): <module> <- runpy.py(86): _run_code <- runpy.py(196): _run_module_as_main",
-    "params": []
-  },
-  {
-    "kernel_name": "mock_combine",
-    "kernel_implementation": "<built-in function launch>",
-    "op_mapping": "TBD",
-    "operation": "",
-    "source_code": "",
-    "call_stack": "cuLaunchKernel <- <built-in function launch> <- triton/backends/nvidia/driver.py(443): __call__ <- triton/runtime/jit.py(563): run <- triton/runtime/jit.py(330): <lambda> <- sglang/mock_dist.py(516): fake_combine <- sglang/srt/layers/moe/ep_moe/token_dispatcher.py(448): _combine_core <- sglang/srt/layers/moe/ep_moe/token_dispatcher.py(441): combine_b <- sglang/srt/layers/moe/ep_moe/token_dispatcher.py(737): combine_b <- sglang/srt/layers/moe/ep_moe/token_dispatcher.py(717): combine <- sglang/srt/two_batch_overlap.py(624): _execute <- sglang/srt/two_batch_overlap.py(636): combine <- sglang/srt/models/deepseek_v2.py(347): forward_deepep <- sglang/srt/models/deepseek_v2.py(325): forward <- torch/nn/modules/module.py(1743): _call_impl <- nn.Module: DeepseekV2MoE_0 <- sglang/srt/models/deepseek_v2.py(1442): forward <- torch/nn/modules/module.py(1743): _call_impl <- nn.Module: DeepseekV2DecoderLayer_1 <- sglang/srt/models/deepseek_v2.py(1583): forward <- torch/nn/modules/module.py(1743): _call_impl <- nn.Module: DeepseekV2Model_0 <- sglang/srt/models/deepseek_v2.py(1716): forward <- torch/utils/_contextlib.py(113): decorate_context <- sglang/srt/model_executor/model_runner.py(1151): forward_extend <- sglang/srt/model_executor/model_runner.py(1208): _forward_raw <- sglang/srt/model_executor/model_runner.py(1187): forward <- sglang/bench_one_batch.py(233): extend <- torch/utils/_contextlib.py(113): decorate_context <- sglang/bench_one_batch.py(389): latency_test_run_once <- sglang/bench_one_batch.py(499): latency_test <- sglang/bench_one_batch.py(548): main <- sglang/bench_one_batch.py(589): <module> <- runpy.py(86): _run_code <- runpy.py(196): _run_module_as_main",
-    "params": []
   },
   {
     "kernel_name": "memcpy_triton_kernel",
@@ -2101,43 +2083,6 @@
     ]
   },
   {
-    "kernel_name": "mock_all_gather",
-    "kernel_implementation": "<built-in function launch>",
-    "op_mapping": "all_gather",
-    "operation": "out = all_gather(rank_i_tensor)",
-    "source_code": "",
-    "call_stack": "cuLaunchKernel <- <built-in function launch> <- triton/backends/nvidia/driver.py(443): __call__ <- triton/runtime/jit.py(563): run <- triton/runtime/jit.py(330): <lambda> <- sglang/mock_dist.py(188): fake_all_gather_into_tensor <- sglang/srt/distributed/parallel_state.py(472): _all_gather_into_tensor <- sglang/srt/distributed/parallel_state.py(144): reg_all_gather_into_tensor <- sglang::reg_all_gather_into_tensor <- <built-in method reg_all_gather_into_tensor of PyCapsule object at 0x734f0034fa50> <- torch/_ops.py(1112): __call__ <- sglang/srt/distributed/parallel_state.py(481): all_gather_into_tensor <- sglang/srt/distributed/parallel_state.py(489): all_gather <- sglang/srt/distributed/communication_op.py(16): tensor_model_parallel_all_gather <- sglang/srt/layers/logits_processor.py(435): _get_logits <- sglang/srt/layers/logits_processor.py(242): forward <- torch/nn/modules/module.py(1743): _call_impl <- nn.Module: LogitsProcessor_0 <- sglang/srt/models/gpt2.py(249): forward <- sglang/srt/model_executor/model_runner.py(1151): forward_extend <- sglang/srt/model_executor/model_runner.py(1208): _forward_raw <- sglang/srt/model_executor/model_runner.py(1187): forward <- sglang/bench_one_batch.py(233): extend <- torch/utils/_contextlib.py(113): decorate_context <- sglang/bench_one_batch.py(389): latency_test_run_once <- sglang/bench_one_batch.py(499): latency_test <- sglang/bench_one_batch.py(548): main <- sglang/bench_one_batch.py(589): <module> <- runpy.py(86): _run_code <- runpy.py(196): _run_module_as_main",
-    "params": [
-      {
-        "id": 0,
-        "role": "output",
-        "example_dim": [
-          8,
-          6288
-        ],
-        "example_dtype": "c10::BFloat16",
-        "description": "out"
-      },
-      {
-        "id": 1,
-        "role": "input",
-        "example_dim": [
-          1,
-          6288
-        ],
-        "example_dtype": "c10::BFloat16",
-        "description": "rank_0_tensor"
-      },
-      {
-        "id": 2,
-        "role": "N/A",
-        "example_dim": [],
-        "example_dtype": "",
-        "description": "unrelated"
-      }
-    ]
-  },
-  {
     "kernel_name": "ncclDevKernel_AllGather_RING_LL(ncclDevComm*, unsigned long, ncclWork*)",
     "kernel_implementation": "nccl:all_gather",
     "op_mapping": "all_gather",
@@ -2174,33 +2119,6 @@
         ],
         "example_dtype": "c10::BFloat16",
         "description": "rank0 tensor to gather"
-      }
-    ]
-  },
-  {
-    "kernel_name": "mock_all_reduce",
-    "kernel_implementation": "<built-in function launch>",
-    "op_mapping": "all_reduce",
-    "operation": "out = all_reduce(rank_i_inp)",
-    "source_code": "",
-    "call_stack": "cuLaunchKernel <- <built-in function launch> <- triton/backends/nvidia/driver.py(443): __call__ <- triton/runtime/jit.py(563): run <- triton/runtime/jit.py(330): <lambda> <- sglang/mock_dist.py(157): fake_all_reduce <- sglang/srt/distributed/parallel_state.py(456): _all_reduce_in_place <- sglang/srt/distributed/parallel_state.py(110): inplace_all_reduce <- sglang::inplace_all_reduce <- <built-in method inplace_all_reduce of PyCapsule object at 0x734f0034fa20> <- torch/_ops.py(1112): __call__ <- sglang/srt/distributed/parallel_state.py(398): all_reduce <- sglang/srt/distributed/communication_op.py(11): tensor_model_parallel_all_reduce <- sglang/srt/layers/vocab_parallel_embedding.py(476): forward <- torch/nn/modules/module.py(1743): _call_impl <- nn.Module: VocabParallelEmbedding_0 <- sglang/srt/models/gpt2.py(213): forward <- torch/nn/modules/module.py(1743): _call_impl <- nn.Module: GPT2Model_0 <- sglang/srt/models/gpt2.py(249): forward <- sglang/srt/model_executor/model_runner.py(1151): forward_extend <- sglang/srt/model_executor/model_runner.py(1208): _forward_raw <- sglang/srt/model_executor/model_runner.py(1187): forward <- sglang/bench_one_batch.py(233): extend <- torch/utils/_contextlib.py(113): decorate_context <- sglang/bench_one_batch.py(389): latency_test_run_once <- sglang/bench_one_batch.py(499): latency_test <- sglang/bench_one_batch.py(548): main <- sglang/bench_one_batch.py(589): <module> <- runpy.py(86): _run_code <- runpy.py(196): _run_module_as_main",
-    "params": [
-      {
-        "id": 0,
-        "role": "input",
-        "example_dim": [
-          1024,
-          12288
-        ],
-        "example_dtype": "c10::BFloat16",
-        "description": "rank_0_inp"
-      },
-      {
-        "id": 1,
-        "role": "N/A",
-        "example_dim": [],
-        "example_dtype": "",
-        "description": "unrelated"
       }
     ]
   },
@@ -3181,63 +3099,6 @@
     ]
   },
   {
-    "kernel_name": "void at::native::(anonymous namespace)::CatArrayBatchedCopy_contig<at::native::(anonymous namespace)::OpaqueType<2u>, unsigned int, 2, 128, 1>(at::native::(anonymous namespace)::OpaqueType<2u>*, at::native::(anonymous namespace)::CatArrInputTensorMetadata<at::native::(anonymous namespace)::OpaqueType<2u>, unsigned int, 128, 1>, at::native::(anonymous namespace)::TensorSizeStride<unsigned int, 4u>, int, unsigned int)",
-    "kernel_implementation": "aten::cat",
-    "op_mapping": "cat",
-    "operation": "Concatenates a list of tensors along a specified dimension.",
-    "source_code": "",
-    "call_stack": "cudaLaunchKernel <- aten::cat <- <built-in method cat of type object at 0x7352e621fec0> <- sglang/mock_dist.py(188): fake_all_gather_into_tensor <- sglang/srt/distributed/parallel_state.py(472): _all_gather_into_tensor <- sglang/srt/distributed/parallel_state.py(144): reg_all_gather_into_tensor <- sglang::reg_all_gather_into_tensor <- <built-in method reg_all_gather_into_tensor of PyCapsule object at 0x734f0034fa50> <- torch/_ops.py(1112): __call__ <- sglang/srt/distributed/parallel_state.py(481): all_gather_into_tensor <- sglang/srt/distributed/parallel_state.py(489): all_gather <- sglang/srt/distributed/communication_op.py(16): tensor_model_parallel_all_gather <- sglang/srt/layers/logits_processor.py(435): _get_logits <- sglang/srt/layers/logits_processor.py(242): forward <- torch/nn/modules/module.py(1743): _call_impl <- nn.Module: LogitsProcessor_0 <- sglang/srt/models/gpt2.py(249): forward <- sglang/srt/model_executor/model_runner.py(1151): forward_extend <- sglang/srt/model_executor/model_runner.py(1208): _forward_raw <- sglang/srt/model_executor/model_runner.py(1187): forward <- sglang/bench_one_batch.py(233): extend <- torch/utils/_contextlib.py(113): decorate_context <- sglang/bench_one_batch.py(389): latency_test_run_once <- sglang/bench_one_batch.py(499): latency_test <- sglang/bench_one_batch.py(548): main <- sglang/bench_one_batch.py(589): <module> <- runpy.py(86): _run_code <- runpy.py(196): _run_module_as_main",
-    "params": [
-      {
-        "id": 0,
-        "role": "input",
-        "example_dim": [
-          [
-            1,
-            6288
-          ],
-          [
-            1,
-            6288
-          ],
-          [
-            1,
-            6288
-          ],
-          [
-            1,
-            6288
-          ],
-          [
-            1,
-            6288
-          ],
-          [
-            1,
-            6288
-          ],
-          [
-            1,
-            6288
-          ],
-          [
-            1,
-            6288
-          ]
-        ],
-        "example_dtype": "TensorList",
-        "description": "List of input tensors to concatenate. Each tensor in the list is expected to have the same shape except in the concatenation dimension."
-      },
-      {
-        "id": 1,
-        "role": "input",
-        "example_dim": [],
-        "example_dtype": "Scalar",
-        "description": "Dimension along which to concatenate the tensors. This is typically an integer scalar specifying the axis."
-      }
-    ]
-  },
-  {
     "kernel_name": "void at::native::unrolled_elementwise_kernel<at::native::direct_copy_kernel_cuda(at::TensorIteratorBase&)::{lambda()#3}::operator()() const::{lambda()#4}::operator()() const::{lambda(long)#1}, std::array<char*, 2ul>, 4, TrivialOffsetCalculator<1, unsigned int>, TrivialOffsetCalculator<1, unsigned int>, at::native::memory::LoadWithCast<1>, at::native::memory::StoreWithCast<1> >(int, at::native::direct_copy_kernel_cuda(at::TensorIteratorBase&)::{lambda()#3}::operator()() const::{lambda()#4}::operator()() const::{lambda(long)#1}, std::array<char*, 2ul>, TrivialOffsetCalculator<1, unsigned int>, TrivialOffsetCalculator<1, unsigned int>, at::native::memory::LoadWithCast<1>, at::native::memory::StoreWithCast<1>)",
     "kernel_implementation": "aten::copy_",
     "op_mapping": "copy_",
@@ -3415,82 +3276,6 @@
         "example_dim": [],
         "example_dtype": "Scalar",
         "description": "non_blocking"
-      }
-    ]
-  },
-  {
-    "kernel_name": "void at::native::elementwise_kernel<128, 4, at::native::gpu_kernel_impl_nocast<at::native::float8_copy_kernel_cuda(at::TensorIteratorBase&)::{lambda(c10::Float8_e4m3fn)#1}>(at::TensorIteratorBase&, at::native::float8_copy_kernel_cuda(at::TensorIteratorBase&)::{lambda(c10::Float8_e4m3fn)#1} const&)::{lambda(int)#1}>(int, at::native::gpu_kernel_impl_nocast<at::native::float8_copy_kernel_cuda(at::TensorIteratorBase&)::{lambda(c10::Float8_e4m3fn)#1}>(at::TensorIteratorBase&, at::native::float8_copy_kernel_cuda(at::TensorIteratorBase&)::{lambda(c10::Float8_e4m3fn)#1} const&)::{lambda(int)#1})",
-    "kernel_implementation": "aten::copy_",
-    "op_mapping": "copy_",
-    "operation": "self = copy(src)",
-    "source_code": "copy(Tensor self, Tensor src, bool non_blocking=False) -> Tensor",
-    "call_stack": "cudaLaunchKernel <- aten::copy_ <- aten::repeat <- <built-in method repeat of Tensor object at 0x7ad0eaad12b0> <- sglang/mock_dist.py(422): fake_dispatch <- sglang/srt/layers/moe/ep_moe/token_dispatcher.py(300): _dispatch_core <- sglang/srt/layers/moe/ep_moe/token_dispatcher.py(241): dispatch_b <- sglang/srt/layers/moe/ep_moe/token_dispatcher.py(711): dispatch_b <- sglang/srt/layers/moe/ep_moe/token_dispatcher.py(691): dispatch <- sglang/srt/two_batch_overlap.py(624): _execute <- sglang/srt/two_batch_overlap.py(627): dispatch <- sglang/srt/models/deepseek_v2.py(347): forward_deepep <- sglang/srt/models/deepseek_v2.py(325): forward <- torch/nn/modules/module.py(1743): _call_impl <- nn.Module: DeepseekV2MoE_0 <- sglang/srt/models/deepseek_v2.py(1442): forward <- torch/nn/modules/module.py(1743): _call_impl <- nn.Module: DeepseekV2DecoderLayer_1 <- sglang/srt/models/deepseek_v2.py(1583): forward <- torch/nn/modules/module.py(1743): _call_impl <- nn.Module: DeepseekV2Model_0 <- sglang/srt/models/deepseek_v2.py(1716): forward <- torch/utils/_contextlib.py(113): decorate_context <- sglang/srt/model_executor/model_runner.py(1151): forward_extend <- sglang/srt/model_executor/model_runner.py(1208): _forward_raw <- sglang/srt/model_executor/model_runner.py(1187): forward <- sglang/bench_one_batch.py(233): extend <- torch/utils/_contextlib.py(113): decorate_context <- sglang/bench_one_batch.py(389): latency_test_run_once <- sglang/bench_one_batch.py(499): latency_test <- sglang/bench_one_batch.py(548): main <- sglang/bench_one_batch.py(589): <module> <- runpy.py(86): _run_code <- runpy.py(196): _run_module_as_main",
-    "params": [
-      {
-        "role": "output",
-        "example_dim": [
-          8,
-          1,
-          128,
-          7168
-        ],
-        "example_dtype": "c10::Float8_e4m3fn",
-        "description": "self"
-      },
-      {
-        "role": "input",
-        "example_dim": [
-          8,
-          1,
-          128,
-          7168
-        ],
-        "example_dtype": "c10::Float8_e4m3fn",
-        "description": "src"
-      },
-      {
-        "role": "input",
-        "example_dim": [],
-        "example_dtype": "Scalar",
-        "description": "non_blocking"
-      }
-    ]
-  },
-  {
-    "kernel_name": "void at::native::elementwise_kernel<128, 2, at::native::gpu_kernel_impl_nocast<at::native::direct_copy_kernel_cuda(at::TensorIteratorBase&)::{lambda()#3}::operator()() const::{lambda()#7}::operator()() const::{lambda(float)#1}>(at::TensorIteratorBase&, at::native::direct_copy_kernel_cuda(at::TensorIteratorBase&)::{lambda()#3}::operator()() const::{lambda()#7}::operator()() const::{lambda(float)#1} const&)::{lambda(int)#1}>(int, at::native::gpu_kernel_impl_nocast<at::native::direct_copy_kernel_cuda(at::TensorIteratorBase&)::{lambda()#3}::operator()() const::{lambda()#7}::operator()() const::{lambda(float)#1}>(at::TensorIteratorBase&, at::native::direct_copy_kernel_cuda(at::TensorIteratorBase&)::{lambda()#3}::operator()() const::{lambda()#7}::operator()() const::{lambda(float)#1} const&)::{lambda(int)#1})",
-    "kernel_implementation": "aten::copy_",
-    "op_mapping": "copy_",
-    "operation": "Performs elementwise direct copy operation for float tensors.",
-    "source_code": "",
-    "call_stack": "cudaLaunchKernel <- aten::copy_ <- aten::repeat <- <built-in method repeat of Tensor object at 0x7ad0eaad12b0> <- sglang/mock_dist.py(422): fake_dispatch <- sglang/srt/layers/moe/ep_moe/token_dispatcher.py(300): _dispatch_core <- sglang/srt/layers/moe/ep_moe/token_dispatcher.py(241): dispatch_b <- sglang/srt/layers/moe/ep_moe/token_dispatcher.py(711): dispatch_b <- sglang/srt/layers/moe/ep_moe/token_dispatcher.py(691): dispatch <- sglang/srt/two_batch_overlap.py(624): _execute <- sglang/srt/two_batch_overlap.py(627): dispatch <- sglang/srt/models/deepseek_v2.py(347): forward_deepep <- sglang/srt/models/deepseek_v2.py(325): forward <- torch/nn/modules/module.py(1743): _call_impl <- nn.Module: DeepseekV2MoE_0 <- sglang/srt/models/deepseek_v2.py(1442): forward <- torch/nn/modules/module.py(1743): _call_impl <- nn.Module: DeepseekV2DecoderLayer_1 <- sglang/srt/models/deepseek_v2.py(1583): forward <- torch/nn/modules/module.py(1743): _call_impl <- nn.Module: DeepseekV2Model_0 <- sglang/srt/models/deepseek_v2.py(1716): forward <- torch/utils/_contextlib.py(113): decorate_context <- sglang/srt/model_executor/model_runner.py(1151): forward_extend <- sglang/srt/model_executor/model_runner.py(1208): _forward_raw <- sglang/srt/model_executor/model_runner.py(1187): forward <- sglang/bench_one_batch.py(233): extend <- torch/utils/_contextlib.py(113): decorate_context <- sglang/bench_one_batch.py(389): latency_test_run_once <- sglang/bench_one_batch.py(499): latency_test <- sglang/bench_one_batch.py(548): main <- sglang/bench_one_batch.py(589): <module> <- runpy.py(86): _run_code <- runpy.py(196): _run_module_as_main",
-    "params": [
-      {
-        "role": "input",
-        "example_dim": [
-          8,
-          1,
-          128,
-          56
-        ],
-        "example_dtype": "float",
-        "description": "Source tensor to be copied."
-      },
-      {
-        "role": "output",
-        "example_dim": [
-          8,
-          1,
-          128,
-          56
-        ],
-        "example_dtype": "float",
-        "description": "Destination tensor where values are copied to."
-      },
-      {
-        "role": "input",
-        "example_dim": [],
-        "example_dtype": "Scalar",
-        "description": "Optional scalar parameter for kernel configuration."
       }
     ]
   },

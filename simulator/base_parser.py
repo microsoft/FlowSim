@@ -269,6 +269,10 @@ class BaseKernelInfoParser:
         kernel_call_stack = self._get_callstack()
         query_name_counter = defaultdict(int)
 
+        # Enforce one-to-one matching between annotation events and kernels
+        # (each annotation can be consumed at most once).
+        used_annotations: set[int] = set()
+
         for entry in self.events:
             if entry.get("cat") == "kernel":
                 # Kernel event intermediate parameters
@@ -315,9 +319,12 @@ class BaseKernelInfoParser:
                 else:
                     # Case 2: If no ext_id, we need to find the shape from user annotations
                     # Key Identification Methodology: Annotation is overlapped with kernel
-                    dims_anno = "N/A"
-                    input_type_anno = "N/A"
-                    for anno in annotation_events:
+                    for anno_idx, anno in enumerate(annotation_events):
+                        if anno_idx in used_annotations:
+                            continue
+                        dims_anno = "N/A"
+                        input_type_anno = "N/A"
+                        desc_anno = ""
                         if "ProfilerStep" in anno.get("name", ""):
                             continue
                         anno_start = anno.get("ts", 0)
@@ -325,69 +332,44 @@ class BaseKernelInfoParser:
                         if "nccl" in name.lower():
                             buffer = 1000  # 1ms buffer for NCCL annotations due to launch delay
                         else:
-                            buffer = 1  # 1us buffer for almost overlapping annotations
+                            buffer = 10  # 10us buffer for almost overlapping annotations
                         # Check if the kernel's time range overlaps with the annotation's time range
                         if anno_start - buffer <= start <= anno_end + buffer:
+                            name_anno = anno.get("name", "")
+
+                            # If we have call stack context, require annotation prefix to match
+                            # something in the stack (time + name), to avoid accidental matches.
+                            if call_stack and "|" in name_anno:
+                                prefix_anno = name_anno.split("|", 1)[0].strip()
+                                if (
+                                    prefix_anno
+                                    and prefix_anno not in call_stack
+                                ):
+                                    continue
+
                             if "nccl" in name.lower():
                                 # Avoid nccl kernel matching other annotations
-                                if "nccl" in anno.get(
-                                    "name", ""
-                                ) or "attn_tp_reduce_scatter" in anno.get(
-                                    "name", ""
+                                if not (
+                                    "nccl" in name_anno
+                                    or "attn_tp_reduce_scatter" in name_anno
                                 ):
-                                    # Annotation Style 1: User Injected, information included in name
-                                    name_anno = anno.get("name")
-                                    dims_anno = re.findall(
-                                        r"(\w+=\([^)]+\))", name_anno
-                                    )
-                                    dims_anno = [
-                                        list(map(int, re.findall(r"\d+", s)))
-                                        for s in dims_anno
-                                    ]
+                                    continue
 
-                                    input_type_anno_match = re.search(
-                                        r"dtype=([^\]]+)\]", name_anno
-                                    )
-                                    input_type_anno = (
-                                        input_type_anno_match.group(1).split(
-                                            ","
-                                        )
-                                        if input_type_anno_match
-                                        else []
-                                    )
-                                    # If annotation 1 failed, try annotation 2
-                                    if dims_anno == []:
-                                        # Annotation Style 2: System Injected, information included in  input dims/type
-                                        dims_anno = anno.get("args", {}).get(
-                                            "Input Dims", "N/A"
-                                        )
-                                        input_type_anno = anno.get(
-                                            "args", {}
-                                        ).get("Input type", "N/A")
-
-                                        if dims_anno == "N/A":
-                                            # Annotation 2 failed as well, meaning the system injection is empty. try next.
-                                            continue
-                            else:
-                                # Annotation Style 1: User Injected, information included in name
-                                name_anno = anno.get("name")
-                                dims_anno = re.findall(
-                                    r"(\w+=\([^)]+\))", name_anno
+                            parsed_dims, parsed_types, parsed_names = (
+                                self._parse_dims_and_types_from_annotation_name(
+                                    name_anno
                                 )
-                                dims_anno = [
-                                    list(map(int, re.findall(r"\d+", s)))
-                                    for s in dims_anno
-                                ]
+                            )
 
-                                input_type_anno_match = re.search(
-                                    r"dtype=([^\]]+)\]", name_anno
-                                )
-                                input_type_anno = (
-                                    input_type_anno_match.group(1).split(",")
-                                    if input_type_anno_match
-                                    else []
-                                )
+                            # Filter: if name-based parsing yields no dims, ignore this annotation.
+                            if not parsed_dims:
+                                used_annotations.add(anno_idx)
+                                continue
 
+                            # print(f"Parsed dims from annotation: {parsed_dims}, name annotation: {name_anno}, kernel name: {parsed_names}")
+                            dims_anno = parsed_dims
+                            input_type_anno = parsed_types
+                            desc_anno = parsed_names
                             break
                     self.individual_info.append(
                         (
@@ -395,7 +377,7 @@ class BaseKernelInfoParser:
                             dims_anno,
                             input_type_anno,
                             "",
-                            "",
+                            desc_anno,
                             duration,
                             "",
                             "",
@@ -405,6 +387,61 @@ class BaseKernelInfoParser:
                     )
 
         return self.individual_info
+
+    @staticmethod
+    def _parse_dims_and_types_from_annotation_name(
+        annotation_name: str,
+    ) -> tuple[list[list[int]], list[str], list[str]]:
+        """Parse dims/dtypes/variable-names from an annotation event name.
+
+        Supports:
+        - New format: `kernel_name|var0[4x16:float32],var1[4x8:float32]`
+        - Legacy format: embedded `dtype=[...]` and `x=(...)` style segments.
+
+        Returns empty lists when parsing fails.
+        """
+
+        if not annotation_name:
+            return [], [], []
+
+        # New format: prefix `kernel|`, then comma-separated `var[AxBx...:dtype]`
+        if "|" not in annotation_name:
+            return [], [], []
+
+        _, payload = annotation_name.split("|", 1)
+        dims: list[list[int]] = []
+        dtypes: list[str] = []
+        var_names: list[str] = []
+        for token in (t.strip() for t in payload.split(",")):
+            if not token:
+                continue
+            m = re.match(
+                r"(?P<var>[^\[]+)\[(?P<shape>[^:\]]+):(?P<dtype>[^\]]+)\]$",
+                token,
+            )
+            if not m:
+                continue
+            var_name = m.group("var").strip()
+            shape_str = m.group("shape").strip()
+            dtype_str = m.group("dtype").strip()
+            if not shape_str:
+                continue
+            try:
+                shape = [
+                    int(p)
+                    for p in re.split(r"[xX]", shape_str)
+                    if p.strip() != ""
+                ]
+            except ValueError:
+                continue
+            if shape:
+                dims.append(shape)
+                dtypes.append(dtype_str)
+                var_names.append(var_name)
+        if dims:
+            return dims, dtypes, var_names
+
+        return [], [], []
 
     def _calibrate_communication_kernels(self) -> None:
         """
@@ -626,6 +663,10 @@ class BaseKernelInfoParser:
                     if "kernel_implementation" in item
                 }
 
+        # Default empty maps when db is missing or not a list.
+        db_data_kernel_name = locals().get("db_data_kernel_name", {})
+        db_data_kernel_impl = locals().get("db_data_kernel_impl", {})
+
         unknown_path = "/workloadsim/unknown_kernels.json"
         unknown_list = []
         if os.path.exists(unknown_path):
@@ -650,23 +691,20 @@ class BaseKernelInfoParser:
         ) in enumerate(self.individual_info):
             # Extract op from call stack if not provided
             # Example stack: cudaLaunchKernel <- aten::cumsum <- <built-in method cumsum of type object at 0x75145c4f6f40> <- ....
-            stack_parts = [p.strip() for p in call_stack.split("<-")]
-            if len(stack_parts) > 1:
-                kernel_impl = stack_parts[1]
-            else:
-                kernel_impl = stack_parts[0] if stack_parts else ""
+            kernel_impl = ""
+            if call_stack is not None:
+                stack_parts = [p.strip() for p in call_stack.split("<-")]
+                if len(stack_parts) > 1:
+                    kernel_impl = stack_parts[1]
+                else:
+                    kernel_impl = stack_parts[0] if stack_parts else ""
 
             db_entry = None
-            # Already recorded in the database per name
             if name in db_data_kernel_name:
                 db_entry = db_data_kernel_name[name]
-            # Not in the database with same kernel name, but there's same kernel implementation recorded
-            # There're two special cases need to be excluded:
-            # 1. Triton kernel without specific implementaiton. Named as <built-in function launch>
-            # 2. Runtime launched kernel without specific implementation.
-            # Named as cuda/bindings/driver.pyx(33813): cuLaunchKernelEx
             elif (
-                kernel_impl in db_data_kernel_impl
+                kernel_impl
+                and kernel_impl in db_data_kernel_impl
                 and "<built-in function launch>" not in kernel_impl
                 and "cuLaunchKernelEx" not in kernel_impl
             ):
@@ -729,7 +767,12 @@ class BaseKernelInfoParser:
                             "role": "unknown",
                             "example_dim": dim,
                             "example_dtype": dtype,
-                            "description": "",
+                            "description": (
+                                desc[idx]
+                                if isinstance(desc, (list, tuple))
+                                and idx < len(desc)
+                                else ""
+                            ),
                         }
                     )
                 unknown_kernel = {
@@ -747,7 +790,7 @@ class BaseKernelInfoParser:
                     dims,
                     input_type,
                     "",
-                    "",
+                    desc,
                     duration,
                     "",
                     "",

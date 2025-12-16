@@ -1,0 +1,612 @@
+diff --git a/python/sglang/bench_serving.py b/python/sglang/bench_serving.py
+index 44bcadf7c..1cb33248b 100644
+--- a/python/sglang/bench_serving.py
++++ b/python/sglang/bench_serving.py
+@@ -20,6 +20,7 @@ import random
+ import resource
+ import sys
+ import time
++import glob
+ import traceback
+ import warnings
+ from argparse import ArgumentParser
+@@ -213,11 +214,10 @@ async def async_request_openai_completions(
+             "ignore_eos": not args.disable_ignore_eos,
+             **request_func_input.extra_request_body,
+         }
+-
+-        # hack to accommodate different LoRA conventions between SGLang and vLLM.
+-        if request_func_input.lora_name:
+-            payload["model"] = request_func_input.lora_name
+-            payload["lora_path"] = request_func_input.lora_name
++        if not hasattr(args, "batched_requests"):
++            args.batched_requests = False
++        payload["model"] = request_func_input.lora_name
++        payload["lora_path"] = request_func_input.lora_name
+ 
+         if request_func_input.image_data:
+             payload.update({"image_data": request_func_input.image_data})
+@@ -811,6 +811,12 @@ def get_dataset(args, tokenizer, model_id=None):
+ 
+         # Limit the number of requests based on --num-prompts
+         input_requests = all_requests_data[: args.num_prompts]
++    elif args.dataset_name == "defined-len":
++        input_requests = generate_defined_len_requests(
++            lens_str=args.prefill_decode_lens,
++            num_prompts=args.num_prompts,
++            tokenizer=tokenizer,
++        )
+     else:
+         raise ValueError(f"Unknown dataset: {args.dataset_name}")
+     return input_requests
+@@ -1101,6 +1107,28 @@ def sample_mmmu_requests(
+     print(f"\nCreated {len(filtered_dataset)} MMMU prompts")
+     return filtered_dataset
+ 
++def generate_defined_len_requests(
++    lens_str: str,
++    num_prompts: int,
++    tokenizer: PreTrainedTokenizerBase,
++) -> List[DatasetRow]:
++    try:
++        prefill_len, decode_len = tuple(map(int, lens_str.split(":")))
++    except Exception as e:
++        raise ValueError(f"Invalid lens_str '{lens_str}', expected 'prefill:decode'") from e
++    input_requests = []
++    vocab_values = list(tokenizer.get_vocab().values())
++    for _ in range(num_prompts):
++        input_ids = random.choices(vocab_values, k=prefill_len)
++        input_requests.append(
++            DatasetRow(
++                prompt=input_ids,
++                prompt_len=prefill_len,
++                output_len=decode_len,
++            )
++        )
++    return input_requests
++
+ 
+ def sample_sharegpt_requests(
+     dataset_path: str,
+@@ -1765,6 +1793,7 @@ async def benchmark(
+     mooncake_num_rounds=1,
+     profile_prefill_url: Optional[List[str]] = None,
+     profile_decode_url: Optional[List[str]] = None,
++    batched_requests: bool = False,
+ ):
+     if backend in ASYNC_REQUEST_FUNCS:
+         request_func = ASYNC_REQUEST_FUNCS[backend]
+@@ -1906,21 +1935,52 @@ async def benchmark(
+         lora_probs = None
+ 
+     pbar = None if disable_tqdm else tqdm(total=pbar_total)
+-    async for request in request_generator:
++    if batched_requests:
++        # Single batched request path
+         if lora_names is not None and len(lora_names) != 0:
+             if lora_request_distribution == "uniform":
+                 lora_name = random.choice(lora_names)
+             elif lora_request_distribution == "distinct":
+-                lora_name = lora_names[lora_idx]
+-                lora_idx = (lora_idx + 1) % len(lora_names)
++                lora_name = lora_names[0]
+             else:
+-                assert (
+-                    lora_request_distribution == "skewed"
+-                ), f"Unexpected lora_request_distribution: {lora_request_distribution}. Expected 'skewed'."
+-
+-                lora_name = np.random.choice(lora_names, p=lora_probs)
++                lora_name = np.random.choice(lora_names)
+         else:
+             lora_name = None
++        batched_prompt = [req.prompt for req in input_requests]
++        batched_prompt_len = input_requests[0].prompt_len if input_requests else 0
++        batched_output_len = input_requests[0].output_len if input_requests else 0
++        request_func_input = RequestFuncInput(
++            model=model_id,
++            prompt=batched_prompt,
++            api_url=api_url,
++            prompt_len=batched_prompt_len,
++            output_len=batched_output_len,
++            lora_name=lora_name,
++            image_data=input_requests[0].image_data if input_requests else None,
++            extra_request_body=extra_request_body,
++            timestamp=time.perf_counter(),
++        )
++        tasks.append(
++            asyncio.create_task(
++                limited_request_func(request_func_input=request_func_input, pbar=pbar)
++            )
++        )
++    else:
++        async for request in request_generator:
++            if lora_names is not None and len(lora_names) != 0:
++                if lora_request_distribution == "uniform":
++                    lora_name = random.choice(lora_names)
++                elif lora_request_distribution == "distinct":
++                    lora_name = lora_names[lora_idx]
++                    lora_idx = (lora_idx + 1) % len(lora_names)
++                else:
++                    assert (
++                        lora_request_distribution == "skewed"
++                    ), f"Unexpected lora_request_distribution: {lora_request_distribution}. Expected 'skewed'."
++
++                    lora_name = np.random.choice(lora_names, p=lora_probs)
++            else:
++                lora_name = None
+ 
+         request_func_input = RequestFuncInput(
+             model=model_id,
+@@ -2367,6 +2427,7 @@ def run_benchmark(args_: argparse.Namespace):
+             mooncake_num_rounds=args.mooncake_num_rounds,
+             profile_prefill_url=getattr(args, "profile_prefill_url", None),
+             profile_decode_url=getattr(args, "profile_decode_url", None),
++            batched_requests=getattr(args, "batched_requests", False),
+         )
+     )
+ 
+@@ -2424,6 +2485,7 @@ if __name__ == "__main__":
+             "mmmu",
+             "image",
+             "mooncake",
++            "defined-len",
+         ],
+         help="Name of the dataset to benchmark on.",
+     )
+@@ -2661,6 +2723,17 @@ if __name__ == "__main__":
+         default=1,
+         help="Number of warmup requests to run before the benchmark",
+     )
++    parser.add_argument(
++        "--prefill-decode-lens",
++        type=str,
++        default="1024:2",
++        help="Prefill:decode pair like 1024:2 (prefill 1024, decode 2) used with defined-len dataset.",
++    )
++    parser.add_argument(
++        "--batched-requests",
++        action="store_true",
++        help="Send all requests at once as a single batched request (backend dependent).",
++    )
+     parser.add_argument(
+         "--tokenize-prompt",
+         action="store_true",
+diff --git a/python/sglang/srt/layers/dp_attention.py b/python/sglang/srt/layers/dp_attention.py
+index 4956d76ee..49256e4eb 100644
+--- a/python/sglang/srt/layers/dp_attention.py
++++ b/python/sglang/srt/layers/dp_attention.py
+@@ -436,6 +436,10 @@ def memcpy_triton(dst, src, dim, offset, sz, offset_src):
+     memcpy_triton_kernel[grid](dst, src, offset, sz, offset_src, chunk_size, BLOCK_SIZE)
+ 
+ 
++def launch_memcpy_triton(dst, src, dim, offset, sz, offset_src):
++    memcpy_triton(dst, src, dim, offset, sz, offset_src)
++
++
+ def _dp_gather_via_all_reduce(
+     global_tokens: torch.Tensor,
+     local_tokens: torch.Tensor,
+@@ -449,12 +453,13 @@ def _dp_gather_via_all_reduce(
+     assert global_tokens.is_contiguous()
+ 
+     if local_tokens.shape[0] > 0 and (is_partial or get_attention_tp_rank() == 0):
+-        assert (
+-            local_tokens.untyped_storage() is not global_tokens.untyped_storage()
+-        ), "aliasing between global_tokens and local_tokens not allowed"
+-
++        # Allow accidental aliasing by working on a clone to avoid corrupting data.
++        if local_tokens.untyped_storage() is global_tokens.untyped_storage():
++            tmp_local = local_tokens.clone()
++        else:
++            tmp_local = local_tokens
+         memcpy_triton(
+-            global_tokens, local_tokens, 0, local_start_pos, local_num_tokens, False
++            global_tokens, tmp_local, 0, local_start_pos, local_num_tokens, False
+         )
+ 
+     # Input IDs are in int 32. We should use inplace_all_reduce for local case because of custom all reduce.
+@@ -536,12 +541,13 @@ def dp_scatter(
+     assert local_tokens.is_contiguous()
+     assert global_tokens.is_contiguous()
+     if local_tokens.shape[0] > 0:
+-        assert (
+-            local_tokens.untyped_storage() is not global_tokens.untyped_storage()
+-        ), "aliasing between local_tokens and global_tokens not allowed"
+-
++        # If aliasing happens, clone the source to ensure correct scatter semantics.
++        if local_tokens.untyped_storage() is global_tokens.untyped_storage():
++            tmp_global = global_tokens.clone()
++        else:
++            tmp_global = global_tokens
+         memcpy_triton(
+-            local_tokens, global_tokens, 0, local_start_pos, local_num_tokens, True
++            local_tokens, tmp_global, 0, local_start_pos, local_num_tokens, True
+         )
+ 
+ 
+diff --git a/python/sglang/srt/layers/moe/ep_moe/layer.py b/python/sglang/srt/layers/moe/ep_moe/layer.py
+index 1793fb273..edcb5b194 100644
+--- a/python/sglang/srt/layers/moe/ep_moe/layer.py
++++ b/python/sglang/srt/layers/moe/ep_moe/layer.py
+@@ -194,6 +194,8 @@ class DeepEPMoE(FusedMoE):
+             if self.use_w4afp8:
+                 output = self.forward_cutlass_w4afp8(dispatch_output)
+             else:
++                # deepgemm path deprecated in this fork; original patch would add profiler wrappers
++                # around ep_scatter/grouped_gemm calls which are no longer present.
+                 assert False, "forward_deepgemm_contiguous is deprecated"
+         elif DispatchOutputChecker.format_is_deepep_ll(dispatch_output):
+             if (
+@@ -206,6 +208,7 @@ class DeepEPMoE(FusedMoE):
+             elif self.use_w4afp8:
+                 output = self.forward_cutlass_w4afp8_masked(dispatch_output)
+             else:
++                # deepgemm masked path deprecated; profiler additions from patch not applicable.
+                 assert False, "forward_deepgemm_masked is deprecated"
+ 
+         combine_input_wrapper = (
+diff --git a/python/sglang/srt/layers/moe/topk.py b/python/sglang/srt/layers/moe/topk.py
+index 28636de23..258093de2 100644
+--- a/python/sglang/srt/layers/moe/topk.py
++++ b/python/sglang/srt/layers/moe/topk.py
+@@ -921,4 +921,22 @@ def select_experts(
+ 
+     get_global_expert_distribution_recorder().on_select_experts(topk_ids=topk_ids)
+ 
++    # Balanced MoE routing: override expert assignment with uniform round-robin
++    if get_bool_env_var("SGLANG_BALANCED_MOE"):
++        # topk_ids: (num_tokens, top_k)
++        num_tokens, k = topk_ids.shape
++        # Total number of experts after location transform equals router_logits last dim
++        num_experts_total = router_logits.shape[-1]
++        # Generate a deterministic balanced pattern cycling through experts.
++        new_ids = (torch.arange(num_tokens * k, device=topk_ids.device).view(num_tokens, k) % num_experts_total).to(topk_ids.dtype)
++        # Uniform weights across routed experts (excluding fused shared experts if present)
++        if num_fused_shared_experts == 0:
++            new_weights = torch.full_like(topk_weights, 1.0 / k)
++        else:
++            # Keep the last shared expert weight intact; distribute uniformly among routed ones
++            routed_k = k - 1
++            routed_uniform = torch.full_like(topk_weights[:, :-1], 1.0 / routed_k)
++            new_weights = torch.cat([routed_uniform, topk_weights[:, -1:].clone()], dim=1)
++        topk_weights, topk_ids = new_weights, new_ids
++
+     return StandardTopKOutput(topk_weights, topk_ids, router_logits)
+diff --git a/python/sglang/srt/managers/scheduler.py b/python/sglang/srt/managers/scheduler.py
+index 2a7afdb4e..47657b081 100644
+--- a/python/sglang/srt/managers/scheduler.py
++++ b/python/sglang/srt/managers/scheduler.py
+@@ -526,6 +526,7 @@ class Scheduler(
+         # Init request dispatcher
+         self._request_dispatcher = TypeBasedDispatcher(
+             [
++                (List[TokenizedGenerateReqInput], self.batch_handle_generate_request),
+                 (TokenizedGenerateReqInput, self.handle_generate_request),
+                 (TokenizedEmbeddingReqInput, self.handle_embedding_request),
+                 (BatchTokenizedGenerateReqInput, self.handle_batch_generate_request),
+@@ -1381,6 +1382,10 @@ class Scheduler(
+         else:
+             self._add_request_to_queue(req)
+ 
++    def batch_handle_generate_request(self, recv_reqs: List[TokenizedGenerateReqInput]):
++        for r in recv_reqs:
++            self.handle_generate_request(r)
++
+     def handle_batch_generate_request(
+         self,
+         recv_req: BatchTokenizedGenerateReqInput,
+@@ -2781,9 +2786,27 @@ def run_scheduler_process(
+ 
+     # Set cpu affinity to this gpu process
+     if get_bool_env_var("SGLANG_SET_CPU_AFFINITY"):
+-        set_gpu_proc_affinity(
+-            server_args.pp_size, server_args.tp_size, server_args.nnodes, gpu_id
+-        )
++    # Prefer an explicit NUMA-aware mapping if available.
++        gpu_to_cpu_map = {
++            0: list(range(56, 72)),
++            1: list(range(72, 88)),
++            2: list(range(88, 104)),
++            3: list(range(104, 112)),
++        }
++
++        cpu_cores = gpu_to_cpu_map.get(gpu_id)
++        if cpu_cores is not None:
++            psutil.Process().cpu_affinity(cpu_cores)
++            logger.info(
++                "Scheduler process bound GPU %d to CPU cores %s",
++                gpu_id,
++                cpu_cores,
++            )
++        else:
++            # Fallback to generic affinity if GPU not in the custom map.
++            set_gpu_proc_affinity(
++                server_args.pp_size, server_args.tp_size, server_args.nnodes, gpu_id
++            )
+     if (numa_node := server_args.numa_node) is not None:
+         numa_bind_to_node(numa_node[gpu_id])
+ 
+diff --git a/python/sglang/srt/managers/scheduler_profiler_mixin.py b/python/sglang/srt/managers/scheduler_profiler_mixin.py
+index f9f3e1215..f7ac52747 100644
+--- a/python/sglang/srt/managers/scheduler_profiler_mixin.py
++++ b/python/sglang/srt/managers/scheduler_profiler_mixin.py
+@@ -147,10 +147,28 @@ class SchedulerProfilerMixin:
+             self.rpd_profiler.rangePush("", "rpd profile range", "")
+             self.profile_in_progress = True
+         elif torchprof_activities:
++            # Force record_shapes True to capture tensor shape info.
++            enforced_record_shapes = True
++            experimental_cfg = None
++            try:
++                from torch.profiler import _ExperimentalConfig
++
++                # Safely build kwargs only for supported attributes.
++                possible_kwargs = {"profile_all_threads": True}
++                filtered_kwargs = {
++                    k: v
++                    for k, v in possible_kwargs.items()
++                    if k in _ExperimentalConfig.__init__.__code__.co_varnames
++                }
++                experimental_cfg = _ExperimentalConfig(**filtered_kwargs)
++            except Exception:
++                experimental_cfg = None
++
+             self.torch_profiler = torch.profiler.profile(
+                 activities=torchprof_activities,
+                 with_stack=with_stack if with_stack is not None else True,
+-                record_shapes=record_shapes if record_shapes is not None else False,
++                record_shapes=enforced_record_shapes,
++                experimental_config=experimental_cfg,
+                 on_trace_ready=(
+                     None
+                     if not _is_npu
+diff --git a/python/sglang/srt/managers/tokenizer_manager.py b/python/sglang/srt/managers/tokenizer_manager.py
+index 25c1bb3f7..444a087a5 100644
+--- a/python/sglang/srt/managers/tokenizer_manager.py
++++ b/python/sglang/srt/managers/tokenizer_manager.py
+@@ -1067,22 +1067,23 @@ class TokenizerManager(TokenizerCommunicatorMixin):
+                     )
+                     rids.append(tmp_obj.rid)
+             else:
+-                # Sequential tokenization and processing
+-                with (
+-                    input_blocker_guard_region(send_to_scheduler=self.send_to_scheduler)
+-                    if get_bool_env_var("SGLANG_ENABLE_COLOCATED_BATCH_GEN")
+-                    else nullcontext()
+-                ):
+-                    for i in range(batch_size):
+-                        tmp_obj = obj[i]
+-                        tokenized_obj = await self._tokenize_one_request(tmp_obj)
+-                        state = self._send_one_request(
+-                            tmp_obj, tokenized_obj, created_time
+-                        )
+-                        generators.append(
+-                            self._wait_one_response(tmp_obj, state, request)
+-                        )
+-                        rids.append(tmp_obj.rid)
++                # Parallel tokenize all requests then send together
++                objs = [obj[i] for i in range(batch_size)]
++                tokenized_objs = await asyncio.gather(
++                    *(self._tokenize_one_request(o) for o in objs)
++                )
++                states = [
++                    ReqState([], False, asyncio.Event(), o, created_time=created_time)
++                    for o in objs
++                ]
++                for i, o in enumerate(objs):
++                    self.rid_to_state[o.rid] = states[i]
++                    generators.append(
++                        self._wait_one_response(o, states[i], request)
++                    )
++                    rids.append(o.rid)
++                # Send all tokenized requests as a list to scheduler
++                self.send_to_scheduler.send_pyobj(tokenized_objs)
+         else:
+             # FIXME: When using batch and parallel_sample_num together, the perf is not optimal.
+             if batch_size > 128:
+diff --git a/python/sglang/srt/models/deepseek_v2.py b/python/sglang/srt/models/deepseek_v2.py
+index d3c364681..ef1073c88 100644
+--- a/python/sglang/srt/models/deepseek_v2.py
++++ b/python/sglang/srt/models/deepseek_v2.py
+@@ -79,7 +79,7 @@ from sglang.srt.layers.moe import (
+ )
+ from sglang.srt.layers.moe.ep_moe.layer import DeepEPMoE, get_moe_impl_class
+ from sglang.srt.layers.moe.fused_moe_triton.layer import FusedMoE
+-from sglang.srt.layers.moe.topk import TopK, TopKOutputFormat
++from sglang.srt.layers.moe.topk import TopK, TopKOutputFormat, StandardTopKOutput
+ from sglang.srt.layers.quantization import CompressedTensorsConfig
+ from sglang.srt.layers.quantization.base_config import QuantizationConfig
+ from sglang.srt.layers.quantization.compressed_tensors.compressed_tensors_moe import (
+@@ -777,6 +777,42 @@ class DeepseekV2MoE(nn.Module):
+             # router_logits: (num_tokens, n_experts)
+             router_logits = self.gate(hidden_states, gemm_output_zero_allocator)
+             topk_output = self.topk(hidden_states, router_logits)
++            if (
++                os.getenv("SGLANG_BALANCED_MOE", "0") == "1"
++                and isinstance(topk_output, StandardTopKOutput)
++            ):
++                tw, ti, rl = (
++                    topk_output.topk_weights,
++                    topk_output.topk_ids,
++                    topk_output.router_logits,
++                )
++                num_tokens, k = ti.shape
++                E = rl.shape[-1]
++                new_ids = (
++                    torch.arange(num_tokens * k, device=ti.device)
++                    .view(num_tokens, k)
++                    % E
++                ).to(ti.dtype)
++                if tw.shape[1] == k:
++                    tw = torch.full_like(tw, 1.0 / k)
++                topk_output = StandardTopKOutput(
++                    topk_weights=tw,
++                    topk_ids=new_ids,
++                    router_logits=rl,
++                )
++                
++                
++                try:
++                    from sglang.srt.distributed import get_pp_group
++
++                    rank = get_pp_group().rank if get_pp_group() is not None else 0
++                except Exception:
++                    rank = 0
++                print(
++                    f"[BalancedMoE] layer={self.layer_id} forward_normal: "
++                    f"topk_ids shape={ti.shape}, min={int(ti.min())}, max={int(ti.max())}"
++                )
++    
+             final_hidden_states = self.experts(hidden_states, topk_output)
+             if (
+                 not _is_cuda
+@@ -820,6 +856,29 @@ class DeepseekV2MoE(nn.Module):
+             # router_logits: (num_tokens, n_experts)
+             router_logits = self.gate(hidden_states, gemm_output_zero_allocator)
+             topk_output = self.topk(hidden_states, router_logits)
++            if (
++                os.getenv("SGLANG_BALANCED_MOE", "0") == "1"
++                and isinstance(topk_output, StandardTopKOutput)
++            ):
++                tw, ti, rl = (
++                    topk_output.topk_weights,
++                    topk_output.topk_ids,
++                    topk_output.router_logits,
++                )
++                num_tokens, k = ti.shape
++                E = rl.shape[-1]
++                new_ids = (
++                    torch.arange(num_tokens * k, device=ti.device)
++                    .view(num_tokens, k)
++                    % E
++                ).to(ti.dtype)
++                if tw.shape[1] == k:
++                    tw = torch.full_like(tw, 1.0 / k)
++                topk_output = StandardTopKOutput(
++                    topk_weights=tw,
++                    topk_ids=new_ids,
++                    router_logits=rl,
++                )
+         else:
+             shared_output = None
+             topk_output = self.topk.empty_topk_output(hidden_states.device)
+@@ -874,6 +933,29 @@ class DeepseekV2MoE(nn.Module):
+         # router_logits: (num_tokens, n_experts)
+         router_logits = self.gate(hidden_states)
+         topk_output = self.topk(hidden_states, router_logits)
++        if (
++            os.getenv("SGLANG_BALANCED_MOE", "0") == "1"
++            and isinstance(topk_output, StandardTopKOutput)
++        ):
++            tw, ti, rl = (
++                topk_output.topk_weights,
++                topk_output.topk_ids,
++                topk_output.router_logits,
++            )
++            num_tokens, k = ti.shape
++            E = rl.shape[-1]
++            new_ids = (
++                torch.arange(num_tokens * k, device=ti.device)
++                .view(num_tokens, k)
++                % E
++            ).to(ti.dtype)
++            if tw.shape[1] == k:
++                tw = torch.full_like(tw, 1.0 / k)
++            topk_output = StandardTopKOutput(
++                topk_weights=tw,
++                topk_ids=new_ids,
++                router_logits=rl,
++            )
+         fused_experts_out = self.experts(
+             hidden_states=hidden_states, topk_output=topk_output
+         )
+@@ -943,6 +1025,14 @@ class DeepseekV2MoE(nn.Module):
+                     layer_id=self.layer_id,
+                 ),
+             )
++            if os.getenv("SGLANG_BALANCED_MOE", "0") == "1" and isinstance(topk_output, tuple) and len(topk_output) == 3:
++                tw, ti, rl = topk_output
++                num_tokens, k = ti.shape
++                E = rl.shape[-1]
++                new_ids = (torch.arange(num_tokens * k, device=ti.device).view(num_tokens, k) % E).to(ti.dtype)
++                if tw.shape[1] == k:
++                    tw = torch.full_like(tw, 1.0 / k)
++                topk_output = (tw, new_ids, rl)
+         else:
+             topk_output = self.topk.empty_topk_output(hidden_states.device)
+ 
+@@ -1025,6 +1115,29 @@ class DeepseekV2MoE(nn.Module):
+                         layer_id=self.layer_id,
+                     ),
+                 )
++                if (
++                    os.getenv("SGLANG_BALANCED_MOE", "0") == "1"
++                    and isinstance(state.topk_output, StandardTopKOutput)
++                ):
++                    tw, ti, rl = (
++                        state.topk_output.topk_weights,
++                        state.topk_output.topk_ids,
++                        state.topk_output.router_logits,
++                    )
++                    num_tokens, k = ti.shape
++                    E = rl.shape[-1]
++                    new_ids = (
++                        torch.arange(num_tokens * k, device=ti.device)
++                        .view(num_tokens, k)
++                        % E
++                    ).to(ti.dtype)
++                    if tw.shape[1] == k:
++                        tw = torch.full_like(tw, 1.0 / k)
++                    state.topk_output = StandardTopKOutput(
++                        topk_weights=tw,
++                        topk_ids=new_ids,
++                        router_logits=rl,
++                    )
+         else:
+             state.topk_output = self.topk.empty_topk_output(hidden_states.device)
+ 
+diff --git a/python/sglang/srt/models/gpt2.py b/python/sglang/srt/models/gpt2.py
+index 1ec33406f..fed466dee 100644
+--- a/python/sglang/srt/models/gpt2.py
++++ b/python/sglang/srt/models/gpt2.py
+@@ -76,7 +76,7 @@ class GPT2Attention(nn.Module):
+             self.num_heads,
+             self.head_dim,
+             scaling=self.scale,
+-            num_kv_heads=total_num_heads,
++            num_kv_heads=self.num_heads,
+             layer_id=layer_id,
+             quant_config=quant_config,
+         )
+diff --git a/python/sglang/utils.py b/python/sglang/utils.py
+index 1d62c5df8..c9837f0aa 100644
+--- a/python/sglang/utils.py
++++ b/python/sglang/utils.py
+@@ -17,7 +17,7 @@ from concurrent.futures import ThreadPoolExecutor
+ from functools import wraps
+ from io import BytesIO
+ from json import dumps
+-from typing import Any, Callable, List, Optional, Tuple, Type, Union
++from typing import Any, Callable, List, Optional, Tuple, Type, Union, get_origin, get_args
+ 
+ import numpy as np
+ import pybase64
+@@ -492,6 +492,18 @@ class TypeBasedDispatcher:
+ 
+     def __call__(self, obj: Any):
+         for ty, fn in self._mapping:
++            # Handle typing generics like List[SomeType]
++            origin = get_origin(ty)
++            if origin is list:
++                if isinstance(obj, list):
++                    args = get_args(ty)
++                    if not args:
++                        return fn(obj)
++                    elem_ty = args[0]
++                    if all(isinstance(x, elem_ty) for x in obj):
++                        return fn(obj)
++                continue
++
+             if isinstance(obj, ty):
+                 return fn(obj)
+ 

@@ -96,7 +96,7 @@ class BaseKernelInfoParser:
             self._calibrate_communication_kernels()
 
         # Add annotations from kernel database
-        self.post_process_with_db(db_path="/workloadsim/kernels.json")
+        self.post_process_with_db(db_path="/flowsim/kernels.json")
 
     def _load_events(self) -> None:
         """
@@ -565,7 +565,7 @@ class BaseKernelInfoParser:
                     profiled_duration = comm_profile_cache[cache_key]
                 else:
                     profiled_duration = nb.run_nccl_all_gather_perf(
-                        cmd_path="/workloadsim/third_party/nccl-tests/build/all_gather_perf",
+                        cmd_path="/flowsim/third_party/nccl-tests/build/all_gather_perf",
                         b=str(size),
                         e=str(size),
                         g=str(self.tensor_parallelism),
@@ -667,7 +667,7 @@ class BaseKernelInfoParser:
         db_data_kernel_name = locals().get("db_data_kernel_name", {})
         db_data_kernel_impl = locals().get("db_data_kernel_impl", {})
 
-        unknown_path = "/workloadsim/unknown_kernels.json"
+        unknown_path = "/flowsim/unknown_kernels.json"
         unknown_list = []
         if os.path.exists(unknown_path):
             with open(unknown_path, "r") as f:

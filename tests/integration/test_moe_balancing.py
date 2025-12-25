@@ -12,7 +12,7 @@ from tests.utils import ARTIFACT_ENV, DEFAULT_ARTIFACT_DIR, SG_LANG_DIR
 @pytest.mark.parametrize(
     "model_path",
     [
-        "/workloadsim/workload/models/configs/deepseek",
+        "/flowsim/workload/models/configs/deepseek",
     ],
 )
 def test_docker_image(tp, model_path):

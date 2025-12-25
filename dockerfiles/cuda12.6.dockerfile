@@ -19,7 +19,7 @@ FROM nvcr.io/nvidia/pytorch:24.10-py3
 # Note: dockerfile modifed based on
 # https://github.com/microsoft/superbenchmark/blob/main/dockerfile/cuda12.4.dockerfile
 
-LABEL maintainer="WorkloadSim"
+LABEL maintainer="FlowSim"
 
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && \
@@ -102,27 +102,6 @@ RUN TARGETARCH_HW=$(uname -m) && \
     mv hpcx-${HPCX_VERSION}-gcc-mlnx_ofed-ubuntu22.04-cuda12-${TARGETARCH_HW} hpcx && \
     rm hpcx.tbz
 
-# Deprecated - Installs specific to amd64 platform
-# RUN if [ "$TARGETARCH" = "amd64" ]; then \
-#     # Install Intel MLC
-#     cd /tmp && \
-#     wget -q https://downloadmirror.intel.com/793041/mlc_v3.11.tgz -O mlc.tgz && \
-#     tar xzf mlc.tgz Linux/mlc && \
-#     cp ./Linux/mlc /usr/local/bin/ && \
-#     rm -rf ./Linux mlc.tgz && \
-#     # Install AOCC compiler
-#     wget https://download.amd.com/developer/eula/aocc-compiler/aocc-compiler-4.0.0_1_amd64.deb && \
-#     apt install -y ./aocc-compiler-4.0.0_1_amd64.deb && \
-#     rm -rf aocc-compiler-4.0.0_1_amd64.deb && \
-#     # Install AMD BLIS
-#     wget https://download.amd.com/developer/eula/blis/blis-4-0/aocl-blis-linux-aocc-4.0.tar.gz && \
-#     tar xzf aocl-blis-linux-aocc-4.0.tar.gz && \
-#     mv amd-blis /opt/AMD && \
-#     rm -rf aocl-blis-linux-aocc-4.0.tar.gz; \
-#     else \
-#     echo "Skipping Intel MLC, AOCC and AMD Bliss installations for non-amd64 architecture: $TARGETARCH"; \
-#     fi
-
 # Install UCX v1.16.0 with multi-threading support
 RUN cd /tmp && \
     wget https://github.com/openucx/ucx/releases/download/v1.16.0/ucx-1.16.0.tar.gz && \
@@ -149,20 +128,24 @@ RUN cd /workspace && \
     git submodule update --init --recursive && \
     python setup.py install
 
-# Copy local workloadsim code into container
-COPY . /workloadsim
+# Copy local FlowSim code into container
+COPY . /flowsim
 
-WORKDIR /workloadsim
+WORKDIR /flowsim
 # Init sglang submodule
 RUN git submodule update --init --recursive
 
 # Install sglang
-WORKDIR /workloadsim/workload/framework/sglang
+WORKDIR /flowsim/workload/framework/sglang
 RUN python3 -m pip install -e "python[all]"
 
+# Apply FlowSim patches
+RUN git apply ../patches/hook.patch && \
+    git apply ../patches/v055.patch
+    
 # Build nccl-tests
-WORKDIR /workloadsim/third_party/nccl-tests
-RUN make -j ${NUM_MAKE_JOBS}
+WORKDIR /flowsim/third_party/nccl-tests
+RUN make -j MPI=1 MPI_HOME=/usr/local/mpi NCCL_HOME=/usr/local
 
-WORKDIR /workloadsim
+WORKDIR /flowsim
 CMD ["/bin/bash"]

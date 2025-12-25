@@ -1,8 +1,8 @@
 import os
 
 ARTIFACT_ENV = "PYTEST_ARTIFACT_DIR"
-DEFAULT_ARTIFACT_DIR = "/workloadsim/tests/test-artifacts"
-SG_LANG_DIR = "/workloadsim/workload/framework/sglang/python/sglang"
+DEFAULT_ARTIFACT_DIR = "/flowsim/tests/test-artifacts"
+SG_LANG_DIR = "/flowsim/workload/framework/sglang/python/sglang"
 
 
 def _write_artifact(artifact_dir: str, name: str, content: str):

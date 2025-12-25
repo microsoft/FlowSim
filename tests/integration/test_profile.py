@@ -21,7 +21,7 @@ def wait_for_port(host, port, timeout=60):
 def test_bench_serving_predefined_len_profile():
     # Set environment variables
     env = os.environ.copy()
-    profile_dir = "/workloadsim/server_profile"
+    profile_dir = "/flowsim/server_profile"
     env["SGLANG_TORCH_PROFILER_DIR"] = profile_dir
     env["SGLANG_PROFILE_KERNELS"] = "1"
     env["SGLANG_PROFILE_DEBUG"] = "1"
@@ -39,7 +39,7 @@ def test_bench_serving_predefined_len_profile():
         os.makedirs(profile_dir)
 
     # Prepare server log files (Scheme A: redirect to files instead of PIPE)
-    artifacts_dir = "/workloadsim/tests/test-artifacts"
+    artifacts_dir = "/flowsim/tests/test-artifacts"
     os.makedirs(artifacts_dir, exist_ok=True)
     ts = int(time.time())
     server_stdout_path = os.path.join(artifacts_dir, f"server_{ts}.stdout.log")
@@ -54,7 +54,7 @@ def test_bench_serving_predefined_len_profile():
             "-m",
             "sglang.launch_server",
             "--model-path",
-            "/workloadsim/workload/models/configs/deepseek/",
+            "/flowsim/workload/models/configs/deepseek/",
             "--load-format",
             "dummy",
             "--tp",
@@ -72,7 +72,7 @@ def test_bench_serving_predefined_len_profile():
             "30001",
             "--disable-cuda-graph",
         ],
-        cwd="/workloadsim/workload/framework/sglang/python",
+        cwd="/flowsim/workload/framework/sglang/python",
         stdout=server_stdout_f,
         stderr=server_stderr_f,
         preexec_fn=os.setsid,
@@ -84,7 +84,7 @@ def test_bench_serving_predefined_len_profile():
         ), "Server did not start in time"
 
         script = os.path.abspath(
-            "/workloadsim/workload/framework/sglang/python/sglang/bench_serving.py"
+            "/flowsim/workload/framework/sglang/python/sglang/bench_serving.py"
         )
         args = [
             sys.executable,
@@ -107,7 +107,7 @@ def test_bench_serving_predefined_len_profile():
             args, capture_output=True, text=True, env=env, timeout=1200
         )
         # Store logs to test-artifacts directory for debugging regardless of success
-        artifacts_dir = "/workloadsim/tests/test-artifacts"
+        artifacts_dir = "/flowsim/tests/test-artifacts"
         try:
             os.makedirs(artifacts_dir, exist_ok=True)
             ts = int(time.time())

@@ -30,7 +30,7 @@ def test_post_parsed_kernels_to_backend():
     """Parse a real trace and post each parsed kernel to the backend `/tasks` endpoint.
 
     Environment:
-      TRACE_PATH - optional path to trace file (default: /workloadsim/tests/unit/test_trace.trace.json.gz)
+      TRACE_PATH - optional path to trace file (default: /flowsim/tests/unit/test_trace.trace.json.gz)
       API_URL - optional backend url (default: http://127.0.0.1:8000)
     """
     _ensure_artifacts_dir()

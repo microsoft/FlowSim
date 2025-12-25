@@ -19,11 +19,8 @@ The project supports rapid deployment using Docker, includes scripts for environ
 
 ## Table of Contents
 
-- [Quick Demo](#quick-demo)
-- [Prerequisites](#prerequisites)
-- [Docker Build and Run](#docker-build-and-run)
-- [Profiling and Simulation](#profiling-and-simulation)
-- [Tests](#tests)
+- [Getting Started](#getting-started)
+- [For Developers](#for-developers)
 - [Risks and limitations](#risks-and-limitations)
 - [License](#license)
 - [Trademarks](#trademarks)
@@ -31,108 +28,160 @@ The project supports rapid deployment using Docker, includes scripts for environ
 ---
 
 
-## Quick Demo
+## Getting Started
 
-This example walks through profiling, parsing, and simulating a real workload.
+### Prerequisites
 
-1. **Build and run the Docker image (on the host with GPU)**
+- Linux system with NVIDIA GPU(s) (for profiling)
+- [Docker](https://docs.docker.com/get-docker/) with [NVIDIA Container Runtime](https://github.com/NVIDIA/nvidia-container-runtime)
+- [Make](https://www.gnu.org/software/make/)
+- [NVIDIA NGC account](https://org.ngc.nvidia.com/setup/api-key) for pulling NVIDIA base images
+- ~50GB disk space for images and traces
+
+**Note:** Run `git submodule update --init --recursive` before building, as the LLMCompass submodule requires initialization.
+
+### 1. Build the Docker Image
 
 ```bash
+cd /path/to/flowsim
 make build-docker
-make run-docker GPU_DEVICES=all MOUNT_VOLUME=y CONTAINER_NAME=flowsim-demo
 ```
 
-2. **Apply FlowSim patches to the bundled sglang**
+This creates a local image named `flowsim-image` with FlowSim patches already applied to sglang.
+
+### 2. Run Profile → Parse → Simulate
+
+Create workspace directories on your host for storing traces and results:
 
 ```bash
-cd /workloadsim/workload/framework/sglang
-git apply ../patches/hook.patch
-git apply ../patches/v055.patch
-cd /workloadsim
+mkdir -p /data/flowsim-profile
+mkdir -p /data/flowsim-simulate
 ```
 
-3. **Generate (or reuse) a trace (optionally translate to CSV + summary)**
-
-Preferred path: run the integration profiling test to generate a fresh trace under `/workloadsim/server_profile`:
+#### Step 1: Profile (Generate Traces)
 
 ```bash
-# 3.a Generate a new trace via profiling (GPU required)
-pytest tests/integration/test_profile.py::test_bench_serving_predefined_len_profile
-
-# 3.b (optional) Translate the trace to CSV + summary for offline analysis
-python scripts/run_parse.py \
-  --trace-file server_profile/your-trace-name-TP-0.trace.json.gz \
-  --output-dir server_simulate
+sudo docker run --rm --gpus=all \
+  -v /data/flowsim-profile:/workspace/profile \
+  -v /data/flowsim-simulate:/workspace/simulate \
+  -w /flowsim \
+  flowsim-image \
+  python scripts/run_profile.py \
+    --profile-dir /workspace/profile \
+    --log-dir /workspace/profile/logs \
+    --server-opts "--model-path /flowsim/workload/models/configs/deepseek/ --load-format dummy --tp 1 --host 0.0.0.0 --port 30001 --attention-backend flashinfer --disable-cuda-graph" \
+    --bench-opts "--backend sglang --host 0.0.0.0 --port 30001 --dataset-name defined-len --prefill-decode-lens 32768:8 --num-prompts 16 --profile"
 ```
 
-Fallback: if you cannot run profiling (e.g., no GPU), reuse the demo trace shipped with the repo instead (both for CSV translation and for step 4 simulation):
+**What this does:**
+- Starts an sglang server with profiling enabled
+- Runs benchmark requests against it
+- Generates `*.trace.json.gz` files in `/data/flowsim-profile` (mounted as `/workspace/profile`)
+
+**Note:** The first run will be slow (~10 minutes) due to DeepGEMM kernel warmup and compilation. For stable performance, avoid using `--rm` flag and reuse the same container. Subsequent runs with similar configurations will be faster.
+
+**Tip:** 
+- Adjust `--server-opts` and `--bench-opts` to match your model, parallelism (TP/DP/EP), and workload requirements. All `sglang.launch_server` and `bench_serving.py` parameters are supported.
+- Trace files can be visualized using [Perfetto UI](https://ui.perfetto.dev/) by uploading the `.trace.json.gz` files directly.
+- For multi-GPU profiling (TP > 1), merge individual traces into a single file for a global view:
+  ```bash
+  python /flowsim/utils/merge_trace.py \
+    --trace_dir /data/flowsim-profile \
+    --output /data/flowsim-profile/merged_trace.json
+  ```
+  Then visualize the merged trace at [Perfetto UI](https://ui.perfetto.dev/).
+
+#### Step 2: Parse (Convert Trace to CSV)
 
 ```bash
-python scripts/run_parse.py \  
-	--trace-file demo/deepseekv3-TP-0.trace.json.gz \  
-	--output-dir server_simulate
+sudo docker run --rm \
+  -v /data/flowsim-profile:/workspace/profile \
+  -v /data/flowsim-simulate:/workspace/simulate \
+  -w /flowsim \
+  flowsim-image \
+  python -m scripts.run_parse \
+    --trace-file /workspace/profile/your-trace-name-TP-0.trace.json.gz \
+    --output-dir /workspace/simulate
 ```
 
-These steps:
+Replace `your-trace-name-TP-0.trace.json.gz` with the actual filename from step 1.
 
-- Use sglang to produce or reuse a real profile trace under `server_profile/` or `demo/`.
-- Optionally use `BaseKernelInfoParser` (via `run_parse.py`) to extract kernel-level information and write a per-kernel CSV plus a summary file into `server_simulate/`.
+**What this does:**
+- Parses the trace file
+- Extracts kernel-level information (operator, shapes, dtypes)
+- Generates a CSV file and JSON summary in `/data/flowsim-simulate` (mounted as `/workspace/simulate`)
 
-You can then inspect the generated artifacts in the corresponding folder.
-
-4. **Run a lightweight simulation via the LLMCompass backend**
-
-With a trace from step 3 (or the demo directory), you can run a small hardware-level simulation using the LLMCompass backend integration test. This test starts a local backend server and parses the trace internally before posting kernels to it; the CSV from step 3 is not required.
+**Fallback:** If you don't have a GPU or can't run profiling, use the demo trace shipped with the repo:
 
 ```bash
-# Optionally point the simulator to the trace you just generated or reused
-export TRACE_PATH=/workloadsim/path-to-your-trace.trace.json.gz
-
-# Run the LLMCompass backend integration test
-pytest tests/unit/test_llmcompass_backend.py::test_post_parsed_kernels_to_backend
+sudo docker run --rm \
+  -v /data/flowsim-simulate:/workspace/simulate \
+  -w /flowsim \
+  flowsim-image \
+  python -m scripts.run_parse \
+    --trace-file /flowsim/demo/deepseekv3-TP-0.trace.json.gz \
+    --output-dir /workspace/simulate
 ```
 
-If `TRACE_PATH` is not set, the test falls back to the bundled sample trace `tests/unit/test_trace.trace.json.gz`.
+#### Step 3: Simulate (Run Hardware Simulation)
 
-Together, steps 1–4 illustrate the core FlowSim workflow: **profile → parse/translate → simulate/analyze**.
+This step requires a running LLMCompass backend. First, build the backend image:
+
+```bash
+sudo docker build -t llmcompass-backend -f backend/LLMCompass/Dockerfile backend/LLMCompass/
+```
+
+Then start the backend:
+
+```bash
+# Terminal 1: Start LLMCompass backend
+sudo docker run --rm -p 8000:8000 llmcompass-backend
+```
+
+Then in another terminal, run the simulation:
+
+```bash
+# Terminal 2: Run simulation
+sudo docker run --rm \
+  --network=host \
+  -v /data/flowsim-profile:/workspace/profile \
+  -v /data/flowsim-simulate:/workspace/simulate \
+  flowsim-image \
+  python -m scripts.run_simulate \
+    --trace-file /workspace/profile/your-trace-name-TP-0.trace.json.gz \
+    --api-url http://127.0.0.1:8000 \
+    --artifact-dir /workspace/simulate/llmcompass
+```
+
+**What this does:**
+- Parses the trace into kernels
+- Submits each kernel to the LLMCompass backend `/tasks` API
+- Polls until all tasks complete
+- Writes request/response artifacts to `/workspace/simulate/llmcompass`
+
+### 3. Inspect Results
+
+All generated files are available on your host at `/data/`:
+
+```bash
+ls -lh /data/flowsim-profile/      # Raw trace files
+ls -lh /data/flowsim-simulate/     # Parsed CSV, summary, simulation artifacts
+```
+
 ---
 
-## Prerequisites
+## For Developers
 
-- Recommended: Linux system
-- Required: [Docker](https://docs.docker.com/get-docker/), [Make](https://www.gnu.org/software/make/) and an [NVIDIA NGC account](https://org.ngc.nvidia.com/setup/api-key) for pulling NVIDIA Docker images.
+### Customizing Profiling Workloads
 
----
+For programmatic profiling setup, see `tests/integration/test_profile.py`, which shows how to:
 
-## Docker Build and Run
+- Launch an sglang server with profiling enabled via environment variables (`SGLANG_TORCH_PROFILER_DIR`, `SGLANG_PROFILE_KERNELS`)
+- Run custom benchmarks against the server to generate trace files
 
-From the project root directory, build and launch the Docker container. Initializing git submodules is necessary, as the repository requires a Personal Access Token (PAT) for cloning.
+Adjust `--server-opts` and `--bench-opts` in `scripts/run_profile.py` to match your model and workload. All `sglang.launch_server` and `bench_serving.py` parameters are supported. See the [sglang profiling documentation](https://docs.sglang.ai/developer_guide/benchmark_and_profiling.html) for details.
 
-```bash
-make build-docker
-make run-docker GPU_DEVICES=[xxx] MOUNT_VOLUME=[y/n] CONTAINER_NAME=[YourContainerName]
-```
-
-- `make build-docker`: Builds the Docker image using the provided Dockerfile. Run `git submodule update --init --recursive` first, since the LLMCompass submodule requires a PAT for initialization.
-- `make run-docker GPU_DEVICES=all`: Starts the container interactively. Use `MOUNT_VOLUME=y` for development purposes to easily download trace files. By default, the container name is `workloadsim-docker`.
-- `make rm-docker`: Removes the Docker container after it stops.
-
----
-
-## Profiling and Simulation
-
-### Quick Start
-
-For a concrete end-to-end profiling setup in this repo, see `tests/integration/test_profile.py`. It demonstrates how to:
-
-- Launch an sglang server with profiling enabled (via `sglang.launch_server` and environment variables such as `SGLANG_TORCH_PROFILER_DIR` and `SGLANG_PROFILE_KERNELS`).
-- Run `python sglang/bench_serving.py --profile ...` against that server to generate `.trace.json.gz` files under `/workloadsim/server_profile`.
-
-These trace files can then be translated and simulated following the [Quick Demo](#quick-demo) section.
-
-For more background on profiling options and parameters, refer to the [sglang profiling documentation](https://docs.sglang.ai/developer_guide/benchmark_and_profiling.html).
-
-### Simulation characteristics (LLMCompass backend)
+### LLMCompass Backend Integration
 
 FlowSim currently integrates with [LLMCompass](https://github.com/TerrenceZhangX/LLMCompass) as a reference GPU performance simulator. In this setup:
 
@@ -147,9 +196,9 @@ LLMCompass itself supports richer workflows (e.g., compiling full operator graph
 After you obtain a profile trace (`*.trace.json.gz`), you will typically run the parser once to inspect kernel-level status:
 
 ```bash
-python scripts/run_parse.py \
-	--trace-file /workloadsim/server_profile/your-trace-name.trace.json.gz \
-	--output-dir /workloadsim/server_simulate
+python -m scripts.run_parse \
+  --trace-file /flowsim/server_profile/your-trace-name.trace.json.gz \
+  --output-dir /flowsim/server_simulate
 ```
 
 During parsing, FlowSim looks up kernel metadata (e.g., tensor shapes and dtypes) in `kernels.json`. Any kernels it cannot match are written to `unknown_kernels.json` at the project root, with incomplete or `unknown` parameter descriptions.

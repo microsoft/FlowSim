@@ -145,7 +145,7 @@ RUN git apply ../patches/hook.patch && \
     
 # Build nccl-tests
 WORKDIR /flowsim/third_party/nccl-tests
-RUN make -j MPI=1 MPI_HOME=/usr/local/mpi NCCL_HOME=/usr/local
+RUN make -j ${NUM_MAKE_JOBS} MPI=1 MPI_HOME=/usr/local/mpi NCCL_HOME=/usr/local
 
 WORKDIR /flowsim
 CMD ["/bin/bash"]

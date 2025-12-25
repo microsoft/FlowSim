@@ -9,8 +9,8 @@ from tests.utils import ARTIFACT_ENV, DEFAULT_ARTIFACT_DIR
 
 @pytest.fixture(scope="module")
 def real_trace_file():
-    trace_path = "/workloadsim/tests/unit/test_trace.trace.json.gz"
-    assert os.path.exists(trace_path), f"Profile File Not Exisit: {trace_path}"
+    trace_path = "/flowsim/tests/unit/test_trace.trace.json.gz"
+    assert os.path.exists(trace_path), f"Profile File Not Exist: {trace_path}"
     return trace_path
 
 

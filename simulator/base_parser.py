@@ -96,7 +96,7 @@ class BaseKernelInfoParser:
             self._calibrate_communication_kernels()
 
         # Add annotations from kernel database
-        self.post_process_with_db(db_path="/workloadsim/kernels.json")
+        self.post_process_with_db(db_path="/flowsim/kernels.json")
 
     def _load_events(self) -> None:
         """
@@ -507,7 +507,7 @@ class BaseKernelInfoParser:
                     # -g: number of GPUs
                     # -d: data type
                     profiled_duration = nb.run_nccl_all_reduce_perf(
-                        cmd_path="/workloadsim/third_party/nccl-tests/build/all_reduce_perf",
+                        cmd_path="/flowsim/third_party/nccl-tests/build/all_reduce_perf",
                         b=str(size),
                         e=str(size),
                         g=str(self.tensor_parallelism),
@@ -536,7 +536,7 @@ class BaseKernelInfoParser:
                     profiled_duration = comm_profile_cache[cache_key]
                 else:
                     profiled_duration = nb.run_nccl_all_reduce_perf(
-                        cmd_path="/workloadsim/third_party/nccl-tests/build/all_reduce_perf",
+                        cmd_path="/flowsim/third_party/nccl-tests/build/all_reduce_perf",
                         b=str(size),
                         e=str(size),
                         g=str(self.tensor_parallelism),
@@ -565,7 +565,7 @@ class BaseKernelInfoParser:
                     profiled_duration = comm_profile_cache[cache_key]
                 else:
                     profiled_duration = nb.run_nccl_all_gather_perf(
-                        cmd_path="/workloadsim/third_party/nccl-tests/build/all_gather_perf",
+                        cmd_path="/flowsim/third_party/nccl-tests/build/all_gather_perf",
                         b=str(size),
                         e=str(size),
                         g=str(self.tensor_parallelism),
@@ -591,7 +591,7 @@ class BaseKernelInfoParser:
                 continue
 
     def post_process_with_db(
-        self, db_path: str = "/workloadsim/kernels.json"
+        self, db_path: str = "/flowsim/kernels.json"
     ) -> None:
         """
         Post-process the individual kernel info with the kernel database.
@@ -603,9 +603,9 @@ class BaseKernelInfoParser:
         4. If no match is found, add the kernel to unknown_kernels.json and ask user to update.
 
         Arguments:
-            db_path (str): Path to the kernel database JSON file to use for enrichment. Defaults to '/workloadsim/kernels.json'.
+            db_path (str): Path to the kernel database JSON file to use for enrichment. Defaults to '/flowsim/kernels.json'.
         Returns:
-            None. Modifies self.individual_info in-place and may create/update '/workloadsim/unknown_kernels.json'.
+            None. Modifies self.individual_info in-place and may create/update '/flowsim/unknown_kernels.json'.
 
         Example Database Entry:
         {
@@ -667,7 +667,7 @@ class BaseKernelInfoParser:
         db_data_kernel_name = locals().get("db_data_kernel_name", {})
         db_data_kernel_impl = locals().get("db_data_kernel_impl", {})
 
-        unknown_path = "/workloadsim/unknown_kernels.json"
+        unknown_path = "/flowsim/unknown_kernels.json"
         unknown_list = []
         if os.path.exists(unknown_path):
             with open(unknown_path, "r") as f:

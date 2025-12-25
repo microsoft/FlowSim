@@ -53,12 +53,12 @@ def parse_args(argv: Optional[list] = None) -> argparse.Namespace:
 	
 	p.add_argument(
 		"--profile-dir",
-		default="/workloadsim/server_profile",
+		default="/flowsim/server_profile",
 		help="Directory where profiler traces (.trace.json.gz) will be written",
 	)
 	p.add_argument(
 		"--log-dir",
-		default="/workloadsim/tests/test-artifacts",
+		default="/flowsim/tests/test-artifacts",
 		help="Directory to write server/client logs",
 	)
 	p.add_argument(

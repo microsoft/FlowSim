@@ -536,7 +536,7 @@ class BaseKernelInfoParser:
                     profiled_duration = comm_profile_cache[cache_key]
                 else:
                     profiled_duration = nb.run_nccl_all_reduce_perf(
-                        cmd_path="/workloadsim/third_party/nccl-tests/build/all_reduce_perf",
+                        cmd_path="/flowsim/third_party/nccl-tests/build/all_reduce_perf",
                         b=str(size),
                         e=str(size),
                         g=str(self.tensor_parallelism),

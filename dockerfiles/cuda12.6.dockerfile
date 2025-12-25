@@ -139,7 +139,9 @@ RUN git submodule update --init --recursive
 WORKDIR /flowsim/workload/framework/sglang
 RUN python3 -m pip install -e "python[all]"
 
-# Apply FlowSim patches
+# Apply FlowSim patches during the Docker build. This replaces the older,
+# previously documented manual 'git apply' step that used to be run inside
+# the container.
 RUN git apply ../patches/hook.patch && \
     git apply ../patches/v055.patch
     

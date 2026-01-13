@@ -61,10 +61,13 @@ mkdir -p /data/flowsim-simulate
 #### Step 1: Profile (Generate Traces)
 
 ```bash
-sudo docker run --rm --gpus=all \
+sudo docker run --gpus=all \
   -v /data/flowsim-profile:/workspace/profile \
   -v /data/flowsim-simulate:/workspace/simulate \
   -w /flowsim \
+  --cap-add=SYS_ADMIN \
+  --network=host \
+  --shm-size 911G \
   flowsim-image \
   python scripts/run_profile.py \
     --profile-dir /workspace/profile \

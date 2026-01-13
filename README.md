@@ -61,16 +61,20 @@ mkdir -p /data/flowsim-simulate
 #### Step 1: Profile (Generate Traces)
 
 ```bash
-sudo docker run --rm --gpus=all \
+sudo docker run --gpus=all \
   -v /data/flowsim-profile:/workspace/profile \
   -v /data/flowsim-simulate:/workspace/simulate \
   -w /flowsim \
+  --cap-add=SYS_ADMIN \
+  --network=host \
+  --shm-size 911G \
   flowsim-image \
   python scripts/run_profile.py \
     --profile-dir /workspace/profile \
     --log-dir /workspace/profile/logs \
-    --server-opts "--model-path /flowsim/workload/models/configs/deepseek/ --load-format dummy --tp 1 --host 0.0.0.0 --port 30001 --attention-backend flashinfer --disable-cuda-graph" \
-    --bench-opts "--backend sglang --host 0.0.0.0 --port 30001 --dataset-name defined-len --prefill-decode-lens 32768:8 --num-prompts 16 --profile"
+    --bench-timeout 3600 \
+    --server-opts "--model-path /flowsim/workload/models/configs/deepseek/ --load-format dummy --tp 4 --ep 4 --host 0.0.0.0 --port 30001 --attention-backend flashinfer --disable-cuda-graph" \
+    --bench-opts "--backend sglang --host 0.0.0.0 --port 30001 --dataset-name defined-len --prefill-decode-lens 1024:8 --num-prompts 1 --profile"
 ```
 
 **What this does:**
@@ -78,7 +82,7 @@ sudo docker run --rm --gpus=all \
 - Runs benchmark requests against it
 - Generates `*.trace.json.gz` files in `/data/flowsim-profile` (mounted as `/workspace/profile`)
 
-**Note:** The first run will be slow (~10 minutes) due to DeepGEMM kernel warmup and compilation. For stable performance, avoid using `--rm` flag and reuse the same container. Subsequent runs with similar configurations will be faster.
+**Note:** The first run will be slow (~10 minutes) due to DeepGEMM kernel warmup and compilation. For stable performance, avoid using `--rm` flag and reuse the same container using `sudo docker exec -it <container_id> bash`. Subsequent runs with similar configurations will be faster.
 
 **Tip:** 
 - Adjust `--server-opts` and `--bench-opts` to match your model, parallelism (TP/DP/EP), and workload requirements. All `sglang.launch_server` and `bench_serving.py` parameters are supported.

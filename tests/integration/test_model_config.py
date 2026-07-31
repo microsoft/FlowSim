@@ -14,6 +14,7 @@ from tests.utils import ARTIFACT_ENV, DEFAULT_ARTIFACT_DIR, SG_LANG_DIR
     [
         "/flowsim/workload/models/configs/deepseek",
         "/flowsim/workload/models/configs/gpt3",
+        "/flowsim/workload/models/configs/GLM-5.2",
     ],
 )
 def test_docker_image(tp, model_path):
@@ -28,12 +29,16 @@ def test_docker_image(tp, model_path):
         "dummy",
         "--tp",
         str(tp),
-        "--batch",
+        "--batch-size",
         "1",
         "--input-len",
         "128",
         "--output-len",
         "2",
+        # GLM-5.2 declares a 1M max_position_embeddings; without a cap the KV
+        # pool is sized for it and the run OOMs before the first forward.
+        "--context-length",
+        "8192",
     ]
     result = subprocess.run(cmd, capture_output=True, text=True)
     output = result.stdout + result.stderr

@@ -51,6 +51,20 @@ make build-docker
 
 This creates a local image named `flowsim-image` with FlowSim patches already applied to sglang.
 
+On Blackwell (GB200/B200, sm_100+) use the CUDA 13 image instead — `cuda12.6.dockerfile`
+builds kernels for sm_90 and below:
+
+```bash
+make build-docker-sglang
+```
+
+This layers FlowSim on top of the official `lmsysorg/sglang:v0.5.16-cu130` release image
+(which already ships matching CUDA 13 / FlashInfer / DeepGEMM builds for amd64 and arm64)
+rather than building sglang from source, so it is also much faster. Override the base with
+`make build-docker-sglang SGLANG_IMAGE=...`; it must match the `workload/framework/sglang`
+submodule commit, since `patches/hook-v0516.patch` is applied to the sglang checkout inside
+the image. The build needs no network access.
+
 ### 2. Profile (Generate Traces)
 
 Use `flowsim submit` to capture stage-separated traces (EXTEND + DECODE), parse them, and run cross-rank analysis — all in one step. See [Stage Profiling](#stage-profiling) for how stages and collection modes work.
@@ -149,7 +163,31 @@ flowsim submit --scheduler local \
     --model-path workload/models/configs/Qwen3-235B-A22B \
     --sweep 1:2048:0 4:2048:0 8:2048:0 --decode-tokens 2 --gpus 1 \
     --extra-server-opts "--load-format dummy"
+
+# GLM-5.2 (MLA + DSA indexer + MoE). Its config declares a 1M context, so the
+# KV pool must be capped or the server OOMs before the first forward.
+flowsim submit --scheduler local \
+    --collect all \
+    --model-path /flowsim/workload/models/configs/GLM-5.2 \
+    --tp 1 --bs 1 --input-len 2048 --existing-ctx 0 --decode-tokens 4 --gpus 1 \
+    --extra-server-opts "--load-format dummy --mem-fraction-static 0.45 --context-length 8192"
 ```
+
+### Model configs
+
+`workload/models/configs/` holds **truncated** HF configs: layer counts are cut to the
+smallest set that still exercises every distinct layer type, while expert counts, hidden
+sizes and head counts are left at their real values. Profiling one dense + one MoE layer is
+enough to extrapolate the full model, and it keeps a run to a single GPU.
+
+For DeepSeek-style models (`deepseek`, `GLM-5.2`) that means `num_hidden_layers: 2` with
+`first_k_dense_replace: 1`, giving layer 0 dense and layer 1 MoE. sglang places MoE layers
+using `first_k_dense_replace` and `moe_layer_freq`; the HF-only `mlp_layer_types` /
+`indexer_types` lists are truncated to match purely for `transformers` self-consistency.
+Models without dense prefix layers (`Qwen3-235B-A22B`) use `num_hidden_layers: 1`.
+
+`GLM-5.2/config_full.json` is the unmodified upstream config, kept so the truncation stays
+auditable — it differs from `config.json` only in the four keys above.
 
 For K8s / Slurm clusters, replace `--scheduler local` with `k8s` or `slurm`. See [schedulers/README.md](schedulers/README.md) for full scheduler documentation.
 

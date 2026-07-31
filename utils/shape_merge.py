@@ -19,9 +19,15 @@ the shape CSV.  This works because the same model + same workload produces the
 same deterministic kernel dispatch sequence regardless of CUDA-graph mode.
 
 For any kernel name present in *both* CSVs, the occurrence counts must match
-exactly (a ``ValueError`` is raised otherwise).  Kernels that appear only in
-the timing CSV (e.g. CUDA-graph launcher stubs) are kept as-is with ``N/A``
-dims — this is expected and not treated as an error.
+exactly, otherwise the *n*-th rows are not the same invocation.  Such kernels
+are skipped (keeping their timing-pass values) and reported; pass
+``strict=True`` / ``--strict`` to raise instead.  Disabling CUDA graphs can
+legitimately change the launch sequence: SGLang's DSA decode backend, for
+example, replays one fused ``_fused_dsa_decode_metadata_kernel`` under CUDA
+graph but issues arange/fill/cumsum/index/add separately in eager mode.
+Kernels that appear only in the timing CSV (e.g. CUDA-graph launcher stubs)
+are kept as-is with ``N/A`` dims — this is expected and not treated as an
+error.
 
 Usage — Python API
 ------------------
@@ -50,7 +56,7 @@ import csv
 import glob
 import os
 import re
-from collections import defaultdict
+from collections import Counter, defaultdict
 from typing import Optional
 
 # CSV columns produced by BaseKernelInfoParser.save_individual_csv
@@ -114,6 +120,7 @@ def merge_shapes(
     output_csv: Optional[str] = None,
     *,
     verbose: bool = False,
+    strict: bool = False,
 ) -> str:
     """Merge shape columns from *shape_csv* into *timing_csv*.
 
@@ -129,6 +136,14 @@ def merge_shapes(
         in the same directory as *timing_csv*.
     verbose : bool
         Print matching statistics.
+    strict : bool
+        Raise if a kernel occurs a different number of times in the two passes.
+        Disabling CUDA graphs can legitimately change the launch sequence — for
+        example SGLang's DSA decode backend replays a single fused
+        ``_fused_dsa_decode_metadata_kernel`` under CUDA graph but issues
+        arange/fill/cumsum/index/add separately in eager mode.  With
+        ``strict=False`` (default) such kernels are left with their timing-pass
+        values instead of being matched against the wrong occurrence.
 
     Returns
     -------
@@ -151,8 +166,32 @@ def merge_shapes(
     with open(timing_csv, newline="") as f:
         timing_rows = list(csv.DictReader(f))
 
+    # Occurrence counts must line up before positional matching is safe.  Any
+    # kernel seen a different number of times in the two passes is excluded
+    # from merging, since row N of one pass is then not the same invocation as
+    # row N of the other.
+    timing_totals: Counter = Counter(r["Name"] for r in timing_rows)
+    mismatched = {
+        name
+        for name, n_timing in timing_totals.items()
+        if name in shape_lookup and n_timing != len(shape_lookup[name])
+    }
+    if mismatched and strict:
+        name = sorted(mismatched)[0]
+        raise ValueError(
+            f"Kernel {name!r} has {len(shape_lookup[name])} entries in shape "
+            f"CSV but {timing_totals[name]} in timing CSV. Timing and shape "
+            f"passes captured different batch counts."
+        )
+
     merged_rows: list[dict] = []
-    stats = {"total": 0, "merged": 0, "already_ok": 0, "no_match": 0}
+    stats = {
+        "total": 0,
+        "merged": 0,
+        "already_ok": 0,
+        "no_match": 0,
+        "count_mismatch": 0,
+    }
 
     for row in timing_rows:
         kname = row["Name"]
@@ -170,6 +209,13 @@ def merge_shapes(
             stats["already_ok"] += 1
             continue
 
+        if kname in mismatched:
+            # Launch sequence differs between the two passes; positional
+            # matching would attach the wrong shapes.
+            merged_rows.append(row)
+            stats["count_mismatch"] += 1
+            continue
+
         # Look up the nth occurrence in shape CSV.  For kernels present
         # in both CSVs, occurrence counts must match 1:1.  Kernels only
         # in the timing CSV (e.g. graph-launcher stubs) keep N/A dims.
@@ -181,8 +227,7 @@ def merge_shapes(
                     f"shape CSV but timing CSV needs occurrence #{idx}. "
                     f"Timing and shape passes captured different batch counts."
                 )
-            shape_row = shape_entries[idx]
-            # Copy shape columns if non-N/A
+            shape_row = shape_entries[idx]            # Copy shape columns if non-N/A
             for col in _SHAPE_COLS:
                 shape_val = shape_row.get(col, "N/A")
                 if shape_val and shape_val != "N/A":
@@ -206,14 +251,16 @@ def merge_shapes(
             stats["no_match"] += 1
 
     # Verify shape CSV has no extra unmatched occurrences for shared kernels
-    for kname, shape_entries in shape_lookup.items():
-        timing_count = name_counter.get(kname, 0)
-        if timing_count > 0 and timing_count < len(shape_entries):
-            raise ValueError(
-                f"Kernel {kname!r} has {len(shape_entries)} entries in "
-                f"shape CSV but only {timing_count} in timing CSV. "
-                f"Timing and shape passes captured different batch counts."
-            )
+    # (already handled up-front via `mismatched`, kept as a safety net).
+    if strict:
+        for kname, shape_entries in shape_lookup.items():
+            timing_count = name_counter.get(kname, 0)
+            if timing_count > 0 and timing_count < len(shape_entries):
+                raise ValueError(
+                    f"Kernel {kname!r} has {len(shape_entries)} entries in "
+                    f"shape CSV but only {timing_count} in timing CSV. "
+                    f"Timing and shape passes captured different batch counts."
+                )
 
     # Write output
     os.makedirs(os.path.dirname(output_csv) or ".", exist_ok=True)
@@ -241,8 +288,15 @@ def merge_shapes(
             f"{stats['total']} kernels, "
             f"{stats['merged']} shapes merged, "
             f"{stats['already_ok']} already had dims, "
-            f"{stats['no_match']} unmatched"
+            f"{stats['no_match']} unmatched, "
+            f"{stats['count_mismatch']} skipped (launch-count mismatch)"
         )
+        if mismatched:
+            print(
+                f"[shape_merge]   {len(mismatched)} kernel name(s) differ "
+                f"between the CUDA-graph and eager passes, e.g. "
+                f"{sorted(mismatched)[0][:70]!r}"
+            )
 
     return output_csv
 
@@ -254,6 +308,7 @@ def merge_shapes_dir(
     *,
     stage: Optional[str] = None,
     verbose: bool = True,
+    strict: bool = False,
 ) -> list[str]:
     """Merge shapes for all matching CSV pairs across two directories.
 
@@ -324,7 +379,7 @@ def merge_shapes_dir(
             ".trace.csv", "_merged.trace.csv"
         )
         out_path = os.path.join(output_dir, out_name)
-        merge_shapes(tc, sc, out_path, verbose=verbose)
+        merge_shapes(tc, sc, out_path, verbose=verbose, strict=strict)
         results.append(out_path)
 
     if verbose:
@@ -359,6 +414,11 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Only process CSVs for this stage",
     )
     p.add_argument("-q", "--quiet", action="store_true", help="Suppress output")
+    p.add_argument(
+        "--strict",
+        action="store_true",
+        help="Fail if a kernel's launch count differs between the two passes",
+    )
     return p
 
 
@@ -368,7 +428,11 @@ def main(argv: Optional[list] = None) -> int:
 
     if args.timing_csv and args.shape_csv:
         out = merge_shapes(
-            args.timing_csv, args.shape_csv, args.output_csv, verbose=verbose
+            args.timing_csv,
+            args.shape_csv,
+            args.output_csv,
+            verbose=verbose,
+            strict=args.strict,
         )
         print(f"Merged CSV: {out}")
         return 0
@@ -380,6 +444,7 @@ def main(argv: Optional[list] = None) -> int:
             args.output_dir,
             stage=args.stage,
             verbose=verbose,
+            strict=args.strict,
         )
         for r in results:
             print(f"  {r}")

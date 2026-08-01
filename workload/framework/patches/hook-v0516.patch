@@ -308,10 +308,10 @@ index 0000000000..dab218a096
 \ No newline at end of file
 diff --git a/python/sglang/srt/tracing/hook_register.py b/python/sglang/srt/tracing/hook_register.py
 new file mode 100644
-index 0000000000..83f25bf6bb
+index 0000000000..9f51158257
 --- /dev/null
 +++ b/python/sglang/srt/tracing/hook_register.py
-@@ -0,0 +1,87 @@
+@@ -0,0 +1,147 @@
 +from sglang.srt.tracing.hook import register
 +
 +
@@ -398,4 +398,64 @@ index 0000000000..83f25bf6bb
 +		"sglang.srt.models.deepseek_common.attention_forward_methods.forward_mha",
 +		"concat_and_cast_mha_k_triton",
 +		base_name="attn.concat_and_cast_mha_k_triton",
++	)
++
++	# ---- DeepSeek sparse attention (DSA) --------------------------------
++	# GLM-5.2 and the other *_moe_dsa models select this backend, so the
++	# FlashInfer-MLA entries above are no-ops for them. Their attention work is
++	# launched from FlashInfer / TensorRT-LLM / DeepGEMM custom ops that never
++	# go through aten dispatch, so the profiler's own record_shapes cannot see
++	# it and the kernels would otherwise land in the trace with no shapes.
++	for _method, _label in (
++		("forward_extend", "dsa.prefill"),
++		("forward_decode", "dsa.decode"),
++		("_forward_standard_mha", "dsa.mha_one_shot"),
++		("_refresh_paged_mqa_schedule_metadata", "dsa.paged_mqa_schedule"),
++		("_refresh_topk_v2_plan", "dsa.topk_plan"),
++		("_apply_cuda_graph_metadata", "dsa.cuda_graph_metadata"),
++	):
++		register(
++			"sglang.srt.layers.attention.dsa_backend",
++			f"DeepseekSparseAttnBackend.{_method}",
++			base_name=_label,
++		)
++
++	# DSA lightning indexer.
++	register(
++		"sglang.srt.layers.attention.dsa.dsa_indexer",
++		"Indexer.forward_cuda",
++		base_name="dsa.indexer",
++	)
++	register(
++		"sglang.srt.layers.attention.dsa.dsa_indexer",
++		"Indexer._fused_k_prepare_and_store",
++		base_name="dsa.indexer_k_prepare_and_store",
++	)
++
++	# MoE. The TensorRT-LLM-gen runner takes dataclasses rather than raw
++	# tensors, so it only contributes attribution; the module-level forward is
++	# what supplies the hidden-state shape.
++	register(
++		"sglang.srt.models.deepseek_v2",
++		"DeepseekV2MoE.forward",
++		base_name="moe.forward",
++	)
++	register(
++		"sglang.srt.layers.moe.moe_runner.flashinfer_trtllm",
++		"fused_experts_none_to_flashinfer_trtllm_bf16",
++		base_name="moe.trtllm_bf16",
++	)
++
++	# RMSNorm dispatches to FlashInfer CUDA kernels.
++	register(
++		"sglang.srt.layers.layernorm",
++		"RMSNorm.forward_cuda",
++		base_name="norm.rmsnorm",
++	)
++
++	# Paged KV-cache allocator decode path.
++	register(
++		"sglang.srt.mem_cache.allocator.paged",
++		"PagedTokenToKVPoolAllocator.alloc_decode",
++		base_name="mem_cache.alloc_decode",
 +	)

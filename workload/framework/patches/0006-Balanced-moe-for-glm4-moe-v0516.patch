@@ -1,0 +1,106 @@
+From: FlowSim <flowsim@microsoft.com>
+Subject: [PATCH] Add balanced MoE for GLM-4/5 MoE via SGLANG_BALANCED_MOE
+
+Profiling a MoE model with `--load-format dummy` gives an untrained router.
+On GLM-5.2 that router collapses onto a small subset of the 256 experts, so
+the grouped-GEMM launches stream far less expert weight than a real
+deployment would and the resulting kernel timings understate MoE cost.
+
+Patch 0004 already added `SGLANG_BALANCED_MOE` for DeepSeek-V2, but it does
+not reach GLM-5.2 for three reasons:
+
+  1. it rewrites `topk_ids` inside `fused_moe_triton`, while GLM uses the
+     TRT-LLM grouped GEMM;
+  2. it hooks `DeepseekV2MoE.forward`, while GLM's decoder layer builds
+     `Glm4MoeSparseMoeBlock`;
+  3. with the flashinfer/trtllm backend `TopK.forward_cuda` returns a
+     `BypassedTopKOutput`, so `topk_ids` never materialises in Python --
+     routing happens inside `moe::dev::routing` from `router_logits`.
+
+The only injection point that works for all three is `router_logits` itself,
+rewritten before the fused op. GLM-5.2 has `n_group=1, topk_group=1`, so
+grouped top-k degenerates to plain top-k over all experts and a large logit
+margin deterministically selects the forced set.
+
+`scoring_func=sigmoid` saturates at 1.0, so a dummy-initialised
+`e_score_correction_bias` can outrank the forced choice; it is zeroed too.
+
+--- a/python/sglang/srt/layers/moe/topk.py
++++ b/python/sglang/srt/layers/moe/topk.py
+@@ -2227,3 +2227,47 @@
+ # ops (and their torch.compile fake impls) were retired here — both CUDA gate
+ # paths now route through the unified Triton router (jit_kernel/moe_fused_gate.py),
+ # whose Python impl is traceable directly, so no register_fake shim is needed.
++
++
++# ---- FlowSim balanced-MoE (benchmark only) ----------------------------------
++import os as _os
++import logging as _logging
++
++_bal_logger = _logging.getLogger(__name__)
++_BALANCED_MOE = bool(int(_os.getenv("SGLANG_BALANCED_MOE", "0")))
++_BALANCED_MOE_LOGGED = False
++
++
++def balance_router_logits(router_logits, top_k: int):
++    """Rewrite router logits so every expert receives an equal token count.
++
++    Token ``t`` is assigned experts ``(t*top_k + j) % num_experts``, which gives
++    each token ``top_k`` distinct experts and each expert exactly
++    ``num_tokens*top_k/num_experts`` tokens. Returns the input unchanged unless
++    ``SGLANG_BALANCED_MOE=1``.
++    """
++    global _BALANCED_MOE_LOGGED
++    if not _BALANCED_MOE or router_logits is None or router_logits.numel() == 0:
++        return router_logits
++    if router_logits.dim() != 2:
++        return router_logits
++    num_tokens, num_experts = router_logits.shape
++    if not _BALANCED_MOE_LOGGED:
++        _bal_logger.warning(
++            "Using balanced MoE with uniform expert assignment "
++            "(num_experts=%d, top_k=%d). This is for benchmarking only!",
++            num_experts,
++            top_k,
++        )
++        _BALANCED_MOE_LOGGED = True
++    ids = torch.arange(
++        num_tokens * top_k, device=router_logits.device, dtype=torch.long
++    ).remainder(num_experts).view(num_tokens, top_k)
++    forced = torch.full_like(router_logits, -1.0e4)
++    forced.scatter_(1, ids, 1.0e4)
++    return forced
++
++
++def balanced_moe_enabled() -> bool:
++    return _BALANCED_MOE
++# ---- end FlowSim balanced-MoE ------------------------------------------------
+--- a/python/sglang/srt/models/glm4_moe.py
++++ b/python/sglang/srt/models/glm4_moe.py
+@@ -64,7 +64,11 @@
+ from sglang.srt.layers.moe.ep_moe.layer import get_moe_impl_class
+ from sglang.srt.layers.moe.fused_moe_triton.layer import FusedMoE
+ from sglang.srt.layers.moe.kt_ep_wrapper import KTEPWrapperMethod
+-from sglang.srt.layers.moe.topk import TopK
++from sglang.srt.layers.moe.topk import (
++    TopK,
++    balance_router_logits,
++    balanced_moe_enabled,
++)
+ from sglang.srt.layers.moe.utils import (
+     RoutingMethodType,
+     filter_moe_weight_param_global_expert,
+@@ -607,6 +611,13 @@
+             shared_output = self._forward_shared_experts(hidden_states)
+             # router_logits: (num_tokens, n_experts)
+             router_logits = self.gate(hidden_states)
++            if balanced_moe_enabled():
++                # Neutralise the noaux_tc correction bias so it cannot outrank
++                # the forced assignment (sigmoid saturates at 1.0).
++                bias = getattr(self.gate, "e_score_correction_bias", None)
++                if bias is not None:
++                    bias.data.zero_()
++                router_logits = balance_router_logits(router_logits, self.top_k)
+             topk_output = self.topk(hidden_states, router_logits)
+         else:
+             shared_output = None

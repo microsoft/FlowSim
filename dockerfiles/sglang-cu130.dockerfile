@@ -55,7 +55,9 @@ COPY kernels.json pyproject.toml README.md /flowsim/
 ARG SGLANG_SRC=/sgl-workspace/sglang
 RUN cd ${SGLANG_SRC} && \
     git apply --verbose /flowsim/workload/framework/patches/hook-v0516.patch && \
-    python -c "from sglang.srt.tracing.hook_register import register_kernels_for_profiling; print('FlowSim tracing hooks installed')"
+    git apply --verbose /flowsim/workload/framework/patches/0006-Balanced-moe-for-glm4-moe-v0516.patch && \
+    python -c "from sglang.srt.tracing.hook_register import register_kernels_for_profiling; print('FlowSim tracing hooks installed')" && \
+    python -c "from sglang.srt.layers.moe.topk import balance_router_logits; print('FlowSim balanced-MoE installed')"
 
 WORKDIR /flowsim
 ENV PYTHONPATH=/flowsim

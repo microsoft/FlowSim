@@ -9,6 +9,12 @@ fix-permissions:
 build-docker:
 	sudo docker build -t $(IMAGE_NAME) -f dockerfiles/cuda12.6.dockerfile .;
 
+# Thin image on top of the official SGLang release image. Required for Blackwell
+# (GB200/B200, sm_100+), which needs CUDA 13; also much faster to build.
+SGLANG_IMAGE ?= lmsysorg/sglang:v0.5.16-cu130
+build-docker-sglang:
+	sudo docker build -t $(IMAGE_NAME) -f dockerfiles/sglang-cu130.dockerfile --build-arg SGLANG_IMAGE=$(SGLANG_IMAGE) .;
+
 run-docker:
 	@if [ -n "$(GPU_DEVICES)" ]; then GPU_DEVICES_FLAG="--gpus=$(GPU_DEVICES)"; else GPU_DEVICES_FLAG=""; fi; \
 	echo "Running: sudo docker run $$GPU_DEVICES_FLAG --network=host --cap-add=SYS_ADMIN -it -p ${PORT}:22 --memory ${MEM_LIMIT} --name $(CONTAINER_NAME) $(IMAGE_NAME)"; \

@@ -221,6 +221,52 @@ class TestMergeShapes:
         rows = _read_csv(output_csv)
         assert rows[0]["Dims"] == "N/A"
 
+    def _write_count_mismatch_pair(self, tmp_path):
+        """Timing pass sees `fused` once; eager pass expands it into 2 `step`s."""
+        timing_csv = str(tmp_path / "timing.csv")
+        shape_csv = str(tmp_path / "shape.csv")
+        _write_csv(
+            timing_csv,
+            [
+                {"Name": "step", "Duration (us)": "100", "Dims": "N/A"},
+                {"Name": "gemm", "Duration (us)": "300", "Dims": "N/A"},
+            ],
+        )
+        _write_csv(
+            shape_csv,
+            [
+                {"Name": "step", "Duration (us)": "99", "Dims": "[1]"},
+                {"Name": "step", "Duration (us)": "98", "Dims": "[2]"},
+                {"Name": "gemm", "Duration (us)": "299", "Dims": "[64, 128]"},
+            ],
+        )
+        return timing_csv, shape_csv
+
+    def test_count_mismatch_skipped_by_default(self, tmp_path):
+        """A kernel launched a different number of times is left untouched.
+
+        Disabling CUDA graphs can change the launch sequence (e.g. SGLang's DSA
+        decode backend replays one fused metadata kernel under CUDA graph but
+        issues several eager ops without it).  Positional matching would then
+        attach the wrong shapes, so those kernels keep their timing-pass values
+        while unaffected kernels still merge.
+        """
+        timing_csv, shape_csv = self._write_count_mismatch_pair(tmp_path)
+        output_csv = str(tmp_path / "merged.csv")
+
+        merge_shapes(timing_csv, shape_csv, output_csv)
+        rows = _read_csv(output_csv)
+        assert rows[0]["Dims"] == "N/A"
+        assert rows[1]["Dims"] == "[64, 128]"
+
+    def test_count_mismatch_raises_when_strict(self, tmp_path):
+        """strict=True restores the fail-fast behaviour."""
+        timing_csv, shape_csv = self._write_count_mismatch_pair(tmp_path)
+        output_csv = str(tmp_path / "merged.csv")
+
+        with pytest.raises(ValueError, match="different batch counts"):
+            merge_shapes(timing_csv, shape_csv, output_csv, strict=True)
+
     def test_default_output_path(self, tmp_path):
         """When output_csv is None, default naming is used."""
         timing_csv = str(tmp_path / "timing.csv")
